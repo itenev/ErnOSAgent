@@ -53,7 +53,22 @@ class EngineService : Service() {
 
         // Start llama-server for local/hybrid modes
         if (mode != "host") {
-            startLlamaServer()
+            // Check if model exists, download if missing
+            val modelDir = File(getExternalFilesDir(null), "models")
+            val modelFile = modelDir.listFiles()?.firstOrNull { it.name.endsWith(".gguf") }
+            if (modelFile == null) {
+                updateNotification("Downloading Gemma 4B model...")
+                Thread {
+                    val mgr = ModelManager(this)
+                    mgr.downloadIfMissing { progress ->
+                        updateNotification("Downloading model: ${progress}%")
+                    }
+                    updateNotification("Model ready — starting inference")
+                    startLlamaServer()
+                }.start()
+            } else {
+                startLlamaServer()
+            }
         }
 
         // Start Rust engine in background thread

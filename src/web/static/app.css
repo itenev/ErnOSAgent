@@ -2142,7 +2142,7 @@ pre[data-lang] { position: relative; padding-top: 28px; }
         z-index: 100;
         transition: left 0.3s ease;
     }
-    .sidebar.mobile-open {
+    .sidebar.open {
         left: 0;
     }
 

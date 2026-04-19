@@ -104,4 +104,41 @@ class ModelManager(private val context: Context) {
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
+
+    /**
+     * Download the model if not present. Blocks until complete.
+     * Reports progress as an integer percentage (0-100) via the callback.
+     */
+    fun downloadIfMissing(onProgress: (Int) -> Unit) {
+        if (isModelDownloaded()) {
+            Log.i(TAG, "Model already downloaded")
+            return
+        }
+
+        Log.i(TAG, "Model not found — starting download")
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var error: String? = null
+
+        downloadModel(object : DownloadListener {
+            override fun onProgress(bytesDownloaded: Long, totalBytes: Long) {
+                if (totalBytes > 0) {
+                    onProgress(((bytesDownloaded * 100) / totalBytes).toInt())
+                }
+            }
+            override fun onComplete(modelFile: File) {
+                Log.i(TAG, "Model download complete: ${modelFile.name}")
+                latch.countDown()
+            }
+            override fun onError(err: String) {
+                error = err
+                Log.e(TAG, "Model download error: $err")
+                latch.countDown()
+            }
+        })
+
+        latch.await()
+        if (error != null) {
+            Log.e(TAG, "Model download failed: $error")
+        }
+    }
 }
