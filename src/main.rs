@@ -175,7 +175,7 @@ fn build_app_state(
         scheduler: Arc::new(RwLock::new(scheduler)),
         agents: Arc::new(RwLock::new(agents)),
         teams: Arc::new(RwLock::new(teams)),
-        browser: Arc::new(RwLock::new(ern_os::tools::browser_tool::BrowserState::new())),
+        browser: Arc::new(RwLock::new(ern_os::tools::browser_tool::BrowserState::with_config(config.browser.clone()))),
         platforms: Arc::new(RwLock::new(ern_os::platform::registry::PlatformRegistry::new())),
         mutable_config: Arc::new(RwLock::new(config.clone())),
         resume_message: Arc::new(RwLock::new(None)),

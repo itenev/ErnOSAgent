@@ -1,7 +1,8 @@
-//! Browser tool — headless Chromium-based web browsing with interactive control.
+//! Browser tool — observable, DOM-aware web browsing with headed/headless modes.
 //! Provides open, click, type, navigate, wait, extract, screenshot, evaluate, close.
 
 use anyhow::{Context, Result};
+use crate::config::BrowserConfig;
 use chromiumoxide::Page;
 use futures_util::StreamExt;
 use std::collections::HashMap;
@@ -16,11 +17,15 @@ pub struct BrowserState {
     _handle: Option<tokio::task::JoinHandle<()>>,
     pages: HashMap<String, Page>,
     next_page_id: usize,
+    config: BrowserConfig,
 }
 
 impl BrowserState {
     pub fn new() -> Self {
-        Self { browser: None, _handle: None, pages: HashMap::new(), next_page_id: 0 }
+        Self { browser: None, _handle: None, pages: HashMap::new(), next_page_id: 0, config: BrowserConfig::default() }
+    }
+    pub fn with_config(config: BrowserConfig) -> Self {
+        Self { browser: None, _handle: None, pages: HashMap::new(), next_page_id: 0, config }
     }
 }
 
@@ -64,7 +69,7 @@ fn find_chrome_binary() -> Option<String> {
     None
 }
 
-/// Ensure browser is initialized, lazily starting headless Chrome.
+/// Ensure browser is initialized, lazily starting Chrome.
 async fn ensure_browser(state: &Arc<RwLock<BrowserState>>) -> Result<()> {
     let mut s = state.write().await;
     if s.browser.is_some() { return Ok(()); }
@@ -73,40 +78,47 @@ async fn ensure_browser(state: &Arc<RwLock<BrowserState>>) -> Result<()> {
         .context("Chrome/Chromium not found. Install Google Chrome.")?;
 
     // Use a unique user-data-dir per process to prevent SingletonLock conflicts.
-    // Without this, a stale lock from a crashed Chrome blocks all future launches.
-    // Must use the builder's `user_data_dir()` method — passing --user-data-dir as
-    // an arg is ignored because chromiumoxide sets its own default internally.
     let user_data_dir = std::env::temp_dir()
         .join(format!("ern-os-chrome-{}", std::process::id()));
     std::fs::create_dir_all(&user_data_dir).ok();
 
+    let mut builder = chromiumoxide::BrowserConfig::builder()
+        .chrome_executable(chrome)
+        .user_data_dir(user_data_dir)
+        .window_size(s.config.window_width, s.config.window_height);
+
+    // Headed mode: visible Chrome window. Headless: invisible.
+    if s.config.headed {
+        builder = builder.with_head();
+    } else {
+        builder = builder.arg("--headless=new");
+    }
+
+    builder = builder
+        .arg("--disable-gpu")
+        .arg("--no-sandbox")
+        .arg("--disable-dev-shm-usage")
+        .arg("--no-first-run")
+        .arg("--disable-extensions")
+        .arg("--disable-default-apps")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .arg("--disable-translate");
+
     let (browser, mut handler) = chromiumoxide::Browser::launch(
-        chromiumoxide::BrowserConfig::builder()
-            .chrome_executable(chrome)
-            .user_data_dir(user_data_dir)
-            .arg("--headless=new")
-            .arg("--disable-gpu")
-            .arg("--no-sandbox")
-            .arg("--disable-dev-shm-usage")
-            .arg("--no-first-run")
-            .arg("--disable-extensions")
-            .arg("--disable-default-apps")
-            .arg("--disable-background-networking")
-            .arg("--disable-sync")
-            .arg("--disable-translate")
-            .build()
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        builder.build().map_err(|e| anyhow::anyhow!("{}", e))?,
     )
     .await
-    .context("Failed to launch headless Chrome")?;
+    .context("Failed to launch Chrome")?;
 
     let handle = tokio::spawn(async move {
         while handler.next().await.is_some() {}
     });
 
+    let mode = if s.config.headed { "headed" } else { "headless" };
+    tracing::info!(mode, "Chrome browser initialized");
     s.browser = Some(browser);
     s._handle = Some(handle);
-    tracing::info!("Headless Chrome browser initialized");
     Ok(())
 }
 
@@ -206,11 +218,12 @@ async fn action_open(state: &Arc<RwLock<BrowserState>>, args: &serde_json::Value
 
     let title = page.get_title().await.unwrap_or_default().unwrap_or_default();
     let page_id = format!("page_{}", s.next_page_id);
+    let context = get_page_context(&page).await;
     s.next_page_id += 1;
     s.pages.insert(page_id.clone(), page);
 
     tracing::info!(page_id = %page_id, url = %url, "Browser page opened");
-    Ok(format!("Opened page '{}': {} — {}", page_id, url, title))
+    Ok(format!("Opened page '{}': {} — {}{}", page_id, url, title, context))
 }
 
 /// Get a page by ID from state (read lock).
@@ -220,18 +233,86 @@ fn get_page<'a>(state: &'a tokio::sync::RwLockReadGuard<BrowserState>, args: &se
         .with_context(|| format!("Page '{}' not found. Open pages: {:?}", page_id, state.pages.keys().collect::<Vec<_>>()))
 }
 
-/// Click an element by CSS selector.
+/// Extract a DOM summary from the page: title, URL, and interactive elements.
+/// This gives the model awareness of what's actually on the page so it can
+/// choose valid selectors instead of guessing blindly.
+async fn get_page_context(page: &Page) -> String {
+    let js = r#"(() => {
+        try {
+            const title = document.title || '';
+            const url = location.href || '';
+            const parts = [];
+            const headings = [...document.querySelectorAll('h1,h2,h3')].slice(0, 10);
+            for (const h of headings) {
+                parts.push('  <' + h.tagName.toLowerCase() + '>' + (h.innerText||'').trim().substring(0, 80) + '</' + h.tagName.toLowerCase() + '>');
+            }
+            const links = [...document.querySelectorAll('a[href]')].slice(0, 20);
+            for (const a of links) {
+                parts.push('  <a href="' + a.href + '">' + (a.innerText||'').trim().substring(0, 50) + '</a>');
+            }
+            const buttons = [...document.querySelectorAll('button, input[type=submit], input[type=button]')].slice(0, 10);
+            for (const b of buttons) {
+                const tag = b.tagName.toLowerCase();
+                parts.push('  <' + tag + '>' + ((b.innerText||b.value||'')).trim() + '</' + tag + '>');
+            }
+            const inputs = [...document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select')].slice(0, 10);
+            for (const i of inputs) {
+                const tag = i.tagName.toLowerCase();
+                parts.push('  <' + tag + ' type="' + (i.type||'') + '" name="' + (i.name||'') + '" id="' + (i.id||'') + '">');
+            }
+            return JSON.stringify({
+                title: title,
+                url: url,
+                links: links.length,
+                buttons: buttons.length,
+                inputs: inputs.length,
+                elements: parts.join('\n')
+            });
+        } catch(e) { return '{}'; }
+    })()"#;
+
+    match page.evaluate(js).await {
+        Ok(val) => {
+            let raw = val.into_value::<String>().unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            let elements = parsed["elements"].as_str().unwrap_or("(empty page)");
+            if elements.is_empty() || elements == "(empty page)" {
+                format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: 0 | Buttons: 0 | Inputs: 0\nDOM: (empty page — no interactive elements)",
+                    parsed["title"].as_str().unwrap_or(""),
+                    parsed["url"].as_str().unwrap_or(""))
+            } else {
+                format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: {} | Buttons: {} | Inputs: {}\nDOM:\n{}",
+                    parsed["title"].as_str().unwrap_or(""),
+                    parsed["url"].as_str().unwrap_or(""),
+                    parsed["links"], parsed["buttons"], parsed["inputs"],
+                    elements)
+            }
+        }
+        Err(_) => String::new()
+    }
+}
+
+/// Click an element by CSS selector. Returns page context on failure.
 async fn action_click(state: &Arc<RwLock<BrowserState>>, args: &serde_json::Value) -> Result<String> {
     let selector = args["selector"].as_str().context("'selector' required for click")?;
     let s = state.read().await;
     let page = get_page(&s, args)?;
 
-    let element = page.find_element(selector).await
-        .with_context(|| format!("Element not found: {}", selector))?;
-    element.click().await
-        .with_context(|| format!("Failed to click: {}", selector))?;
-
-    Ok(format!("Clicked: {}", selector))
+    match page.find_element(selector).await {
+        Ok(element) => {
+            element.click().await
+                .with_context(|| format!("Failed to click: {}", selector))?;
+            let context = get_page_context(page).await;
+            Ok(format!("Clicked: {}{}", selector, context))
+        }
+        Err(_) => {
+            let context = get_page_context(page).await;
+            anyhow::bail!(
+                "Element '{}' not found on this page.{}\n\nUse the DOM above to choose a valid selector.",
+                selector, context
+            )
+        }
+    }
 }
 
 /// Type text into an element.
@@ -241,13 +322,21 @@ async fn action_type(state: &Arc<RwLock<BrowserState>>, args: &serde_json::Value
     let s = state.read().await;
     let page = get_page(&s, args)?;
 
-    let element = page.find_element(selector).await
-        .with_context(|| format!("Element not found: {}", selector))?;
-    element.click().await.ok();
-    element.type_str(text).await
-        .with_context(|| format!("Failed to type into: {}", selector))?;
-
-    Ok(format!("Typed '{}' into {}", text, selector))
+    match page.find_element(selector).await {
+        Ok(element) => {
+            element.click().await.ok();
+            element.type_str(text).await
+                .with_context(|| format!("Failed to type into: {}", selector))?;
+            Ok(format!("Typed '{}' into {}", text, selector))
+        }
+        Err(_) => {
+            let context = get_page_context(page).await;
+            anyhow::bail!(
+                "Element '{}' not found for typing.{}\n\nUse the DOM above to choose a valid selector.",
+                selector, context
+            )
+        }
+    }
 }
 
 /// Navigate an existing page to a new URL.
@@ -261,7 +350,8 @@ async fn action_navigate(state: &Arc<RwLock<BrowserState>>, args: &serde_json::V
     page.wait_for_navigation().await.ok();
 
     let title = page.get_title().await.unwrap_or_default().unwrap_or_default();
-    Ok(format!("Navigated to: {} — {}", url, title))
+    let context = get_page_context(page).await;
+    Ok(format!("Navigated to: {} — {}{}", url, title, context))
 }
 
 /// Wait for an element to appear.

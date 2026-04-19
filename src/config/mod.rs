@@ -27,6 +27,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub codes: CodesConfig,
     #[serde(default)]
+    pub browser: BrowserConfig,
+    #[serde(default)]
     pub discord: DiscordConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
@@ -200,6 +202,31 @@ impl Default for CodesConfig {
     }
 }
 
+/// Browser tool configuration — controls headed/headless mode and viewport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserConfig {
+    /// Show visible Chrome window (true) or run headless (false).
+    /// Default: true on macOS (local dev), false on Linux (CI/server).
+    pub headed: bool,
+    /// Browser viewport width.
+    pub window_width: u32,
+    /// Browser viewport height.
+    pub window_height: u32,
+    /// Default timeout for element waits (ms).
+    pub timeout_ms: u64,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            headed: cfg!(target_os = "macos"),
+            window_width: 1280,
+            window_height: 900,
+            timeout_ms: 10000,
+        }
+    }
+}
+
 /// Discord platform adapter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordConfig {
@@ -312,6 +339,7 @@ impl Default for AppConfig {
             web: WebConfig::default(),
             prompt: PromptConfig::default(),
             codes: CodesConfig::default(),
+            browser: BrowserConfig::default(),
             discord: DiscordConfig::default(),
             telegram: TelegramConfig::default(),
         }

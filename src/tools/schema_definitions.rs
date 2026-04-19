@@ -274,7 +274,7 @@ pub fn browser_tool_schema() -> serde_json::Value {
         "type": "function",
         "function": {
             "name": "browser",
-            "description": "Interactive headless browser. Open pages, click elements, type text, navigate, wait for elements, extract content, take screenshots, and run JavaScript.",
+            "description": "Interactive browser (visible window when headed mode enabled). Every action returns DOM context showing available links, buttons, inputs, and headings so you can choose valid selectors. Actions: open, click, type, navigate, wait, extract, screenshot, evaluate, close, list.",
             "parameters": {
                 "type": "object",
                 "properties": {

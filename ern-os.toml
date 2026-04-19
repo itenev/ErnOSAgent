@@ -36,6 +36,12 @@ enabled = true
 port = 8443
 workspace = "."
 
+[browser]
+headed = true          # true = visible Chrome window, false = headless
+window_width = 1280
+window_height = 900
+timeout_ms = 10000
+
 [discord]
 token = ""  # Set via DISCORD_TOKEN env var or add here locally
 admin_ids = [
