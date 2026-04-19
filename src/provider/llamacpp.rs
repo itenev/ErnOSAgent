@@ -76,9 +76,12 @@ impl LlamaCppProvider {
 
         // Thinking mode control
         if !thinking {
-            // Disable thinking for observer/sync calls — suppress thinking channel entirely.
-            // Temperature is NOT set here — auto-derived from model defaults (§2.1).
-            body["reasoning_effort"] = serde_json::json!("none");
+            // Disable thinking for observer/sync calls — suppresses the thinking
+            // channel entirely via Gemma 4's Jinja template parameter.
+            // NOTE: `reasoning_effort` is NOT supported by llama-server and was
+            // silently ignored, causing the model to waste thousands of thinking
+            // tokens before producing the actual response.
+            body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
         }
 
         body
