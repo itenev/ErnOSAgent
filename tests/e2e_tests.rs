@@ -187,7 +187,6 @@ mod state_tests {
     use ern_os::model::ModelSpec;
     use ern_os::memory::MemoryManager;
     use ern_os::session::SessionManager;
-    use ern_os::provider::Provider;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use tempfile::TempDir;

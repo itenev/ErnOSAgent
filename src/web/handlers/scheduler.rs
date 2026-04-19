@@ -76,17 +76,13 @@ fn parse_task(body: &serde_json::Value) -> crate::scheduler::job::JobTask {
     match body["task_type"].as_str() {
         Some("sleep_cycle") => JobTask::SleepCycle,
         Some("lesson_decay") => JobTask::LessonDecay,
-        Some("memory_consolidate") => JobTask::MemoryConsolidate,
-        Some("snapshot_capture") => JobTask::SnapshotCapture,
         Some("synaptic_prune") => JobTask::SynapticPrune,
-        Some("buffer_flush") => JobTask::BufferFlush,
         Some("log_rotate") => JobTask::LogRotate,
-        Some("health_check") => JobTask::HealthCheck,
         Some("custom") => {
             let cmd = body["custom_command"].as_str().unwrap_or("echo ok").to_string();
             JobTask::Custom(cmd)
         }
-        _ => JobTask::HealthCheck,
+        _ => JobTask::Custom("echo 'unknown task type'".to_string()),
     }
 }
 

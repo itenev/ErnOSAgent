@@ -70,12 +70,8 @@ async fn execute_task(task: &JobTask, state: &AppState) -> (bool, String) {
     match task {
         JobTask::SleepCycle => run_sleep(state).await,
         JobTask::LessonDecay => run_lesson_decay(state).await,
-        JobTask::MemoryConsolidate => run_memory_consolidate(state).await,
-        JobTask::SnapshotCapture => run_snapshot_capture().await,
         JobTask::SynapticPrune => run_synaptic_prune(state).await,
-        JobTask::BufferFlush => run_buffer_flush(state).await,
         JobTask::LogRotate => run_log_rotate().await,
-        JobTask::HealthCheck => run_health_check(state).await,
         JobTask::Custom(cmd) => run_custom_command(cmd).await,
     }
 }
@@ -114,45 +110,11 @@ async fn run_lesson_decay(state: &AppState) -> (bool, String) {
     }
 }
 
-async fn run_memory_consolidate(state: &AppState) -> (bool, String) {
-    let memory = state.memory.read().await;
-    let summary = memory.status_summary();
-    (true, format!("status: {}", summary))
-}
-
-async fn run_snapshot_capture() -> (bool, String) {
-    let dir = std::path::Path::new("data/snapshots");
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        return (false, format!("Failed to create snapshots dir: {}", e));
-    }
-
-    let snapshot = crate::interpretability::NeuralSnapshot {
-        id: uuid::Uuid::new_v4().to_string(),
-        timestamp: chrono::Utc::now(),
-        top_features: Vec::new(),
-        context_summary: "Scheduled snapshot capture".into(),
-        divergence_from_baseline: 0.0,
-    };
-
-    let filename = format!("snapshot_{}.json", snapshot.timestamp.format("%Y%m%d_%H%M%S"));
-    let path = dir.join(&filename);
-    match std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap_or_default()) {
-        Ok(_) => (true, format!("Saved {}", filename)),
-        Err(e) => (false, format!("Write failed: {}", e)),
-    }
-}
-
 async fn run_synaptic_prune(state: &AppState) -> (bool, String) {
     let mut memory = state.memory.write().await;
     memory.synaptic.decay_all(0.95);
     let edges = memory.synaptic.edge_count();
     (true, format!("edges_remaining={}", edges))
-}
-
-async fn run_buffer_flush(state: &AppState) -> (bool, String) {
-    let golden = state.golden_buffer.read().await;
-    let rejection = state.rejection_buffer.read().await;
-    (true, format!("golden={}, rejection={}", golden.count(), rejection.count()))
 }
 
 async fn run_log_rotate() -> (bool, String) {
@@ -178,20 +140,6 @@ async fn run_log_rotate() -> (bool, String) {
         }
     }
     (true, format!("rotated={} old files", rotated))
-}
-
-async fn run_health_check(state: &AppState) -> (bool, String) {
-    let memory = state.memory.read().await;
-    let golden = state.golden_buffer.read().await;
-    let sessions = state.sessions.read().await;
-    let status = format!(
-        "memory_ok={}, lessons={}, golden={}, sessions={}",
-        true,
-        memory.lessons.count(),
-        golden.count(),
-        sessions.list().len(),
-    );
-    (true, status)
 }
 
 async fn run_custom_command(cmd: &str) -> (bool, String) {

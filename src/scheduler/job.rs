@@ -37,12 +37,8 @@ pub enum JobSchedule {
 pub enum JobTask {
     SleepCycle,
     LessonDecay,
-    MemoryConsolidate,
-    SnapshotCapture,
     SynapticPrune,
-    BufferFlush,
     LogRotate,
-    HealthCheck,
     /// User-defined shell command — unrestricted per No-Limits governance.
     Custom(String),
 }
@@ -52,12 +48,8 @@ impl std::fmt::Display for JobTask {
         match self {
             Self::SleepCycle => write!(f, "sleep_cycle"),
             Self::LessonDecay => write!(f, "lesson_decay"),
-            Self::MemoryConsolidate => write!(f, "memory_consolidate"),
-            Self::SnapshotCapture => write!(f, "snapshot_capture"),
             Self::SynapticPrune => write!(f, "synaptic_prune"),
-            Self::BufferFlush => write!(f, "buffer_flush"),
             Self::LogRotate => write!(f, "log_rotate"),
-            Self::HealthCheck => write!(f, "health_check"),
             Self::Custom(cmd) => write!(f, "custom: {}", cmd),
         }
     }
@@ -140,7 +132,7 @@ mod tests {
             name: "test_job".into(),
             description: "test".into(),
             schedule,
-            task: JobTask::HealthCheck,
+            task: JobTask::SleepCycle,
             enabled: true,
             created_at: Utc::now() - chrono::Duration::hours(1),
             last_run: None,
