@@ -29,7 +29,7 @@ pub async fn execute_tool_with_state(
         "self_skills" => dispatch_self_skills(state, &args).await,
         "learning" => crate::tools::learning_tool::execute(&args, state).await,
         "steering" => crate::tools::steering_tool::execute(&args).await,
-        "interpretability" => crate::tools::interpretability_tool::execute(&args).await,
+        "interpretability" => crate::tools::interpretability_tool::execute(&args, state).await,
         "codebase_search" => crate::tools::codebase_search::execute(&args).await,
         "file_read" => crate::tools::file_read::execute(&args).await,
         "file_write" => crate::tools::file_write::execute(&args).await,
@@ -473,6 +473,7 @@ mod tests {
                 crate::config::AppConfig::default()
             )),
             resume_message: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            sae: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         };
         let result = rt.block_on(execute_tool_with_state(&state, &tc));
         assert!(result.output.contains("Unknown tool"));

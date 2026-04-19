@@ -223,6 +223,7 @@ mod state_tests {
             )),
             mutable_config: Arc::new(RwLock::new(AppConfig::default())),
             resume_message: Arc::new(RwLock::new(None)),
+            sae: Arc::new(RwLock::new(None)),
         }
     }
 

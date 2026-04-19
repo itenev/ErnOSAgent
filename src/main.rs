@@ -179,7 +179,51 @@ fn build_app_state(
         platforms: Arc::new(RwLock::new(ern_os::platform::registry::PlatformRegistry::new())),
         mutable_config: Arc::new(RwLock::new(config.clone())),
         resume_message: Arc::new(RwLock::new(None)),
+        sae: Arc::new(RwLock::new(load_sae_weights())),
     })
+}
+
+/// Load SAE weights from models/sae/ directory at startup.
+fn load_sae_weights() -> Option<ern_os::interpretability::sae::SparseAutoencoder> {
+    let sae_dir = std::path::Path::new("models/sae");
+    if !sae_dir.exists() {
+        tracing::debug!("No models/sae/ directory — SAE interpretability disabled");
+        return None;
+    }
+
+    // Find the first .safetensors file
+    let entry = std::fs::read_dir(sae_dir).ok()?.find_map(|e| {
+        let e = e.ok()?;
+        if e.path().extension().map_or(false, |ext| ext == "safetensors") {
+            Some(e.path())
+        } else {
+            None
+        }
+    });
+
+    match entry {
+        Some(path) => {
+            tracing::info!(path = %path.display(), "Loading SAE weights...");
+            match ern_os::interpretability::sae::SparseAutoencoder::load_safetensors(&path) {
+                Ok(sae) => {
+                    tracing::info!(
+                        features = sae.num_features,
+                        model_dim = sae.model_dim,
+                        "SAE loaded — interpretability encode active"
+                    );
+                    Some(sae)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to load SAE weights");
+                    None
+                }
+            }
+        }
+        None => {
+            tracing::debug!("No .safetensors files in models/sae/ — SAE disabled");
+            None
+        }
+    }
 }
 
 /// Start the WebUI hub and optionally open browser.
