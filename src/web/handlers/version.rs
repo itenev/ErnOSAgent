@@ -32,7 +32,7 @@ pub async fn check_updates() -> Json<serde_json::Value> {
     let root = std::env::current_dir().unwrap_or_default();
 
     // Fetch latest from origin
-    let fetch_result = run_git(&root, &["fetch", "origin"]).await;
+    let _fetch_result = run_git(&root, &["fetch", "origin"]).await;
     let branch = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await;
     let branch = branch.trim();
 
