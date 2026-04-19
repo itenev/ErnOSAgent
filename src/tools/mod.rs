@@ -14,6 +14,7 @@ pub mod interpretability_tool;
 pub mod learning_tool;
 pub mod self_skills_tool;
 pub mod codebase_search;
+pub mod file_extractor;
 pub mod file_read;
 pub mod file_write;
 pub mod browser_tool;

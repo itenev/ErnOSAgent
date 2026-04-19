@@ -986,6 +986,19 @@ body {
 }
 .danger-btn:active { transform: translateY(0); }
 
+/* ─── Update Badge ─── */
+.update-badge {
+    color: #ff4466; font-size: 8px; margin-left: 4px;
+    animation: pulse-badge 2s infinite;
+}
+@keyframes pulse-badge {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+.version-badge {
+    font-family: 'JetBrains Mono', monospace;
+}
+
 /* ─── Training View ─── */
 .training-section {
     border-radius: var(--radius); overflow: hidden;

@@ -1,4 +1,4 @@
-// Ern-OS — File read tool
+// Ern-OS — File read tool (universal extraction)
 
 use anyhow::{Context, Result};
 use tracing;
@@ -6,10 +6,29 @@ use tracing;
 pub async fn execute(args: &serde_json::Value) -> Result<String> {
     let path = args["path"].as_str().context("file_read requires 'path'")?;
     tracing::info!(path = %path, "file_read START");
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            tracing::info!(path = %path, bytes = content.len(), "file_read OK");
-            Ok(content)
+
+    // Use universal file extractor for all file types
+    match crate::tools::file_extractor::extract(path) {
+        Ok(result) => {
+            tracing::info!(
+                path = %path,
+                mime = %result.mime_type,
+                len = result.content.len(),
+                lang = ?result.language,
+                images = result.image_data_urls.len(),
+                "file_read OK"
+            );
+
+            // If there are images, include them for vision
+            if !result.image_data_urls.is_empty() {
+                let mut output = result.content;
+                for url in &result.image_data_urls {
+                    output.push_str(&format!("\n\n[IMAGE DATA]\n{}", url));
+                }
+                Ok(output)
+            } else {
+                Ok(result.content)
+            }
         }
         Err(e) => {
             tracing::warn!(path = %path, err = %e, "file_read FAILED");

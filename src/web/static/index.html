@@ -61,7 +61,7 @@
                 <span class="nav-icon">💻</span> Ern-OS Code
             </button>
             <button class="nav-tab" data-view="settings" onclick="ErnOS.switchView('settings')">
-                <span class="nav-icon">⚙️</span> Settings
+                <span class="nav-icon">⚙️</span> Settings <span class="update-badge" id="settings-update-badge" style="display:none">●</span>
             </button>
         </nav>
 
@@ -78,6 +78,7 @@
 
         <div class="sidebar-footer" id="status-bar">
             <span class="status-dot disconnected"></span>Connecting...
+            <span class="version-badge" id="version-badge" title="Current version"></span>
         </div>
     </aside>
 
@@ -132,7 +133,7 @@
                             onkeydown="ErnOS.handleKeyDown(event)" oninput="ErnOS.autoResize(this)"
                             aria-label="Chat message input"></textarea>
                         <button class="attach-btn" onclick="document.getElementById('file-input').click()" aria-label="Attach file">📎</button>
-                        <input type="file" id="file-input" accept="image/*,video/*" multiple hidden>
+                        <input type="file" id="file-input" accept="*/*" multiple hidden>
                     </div>
                     <button class="send-btn" id="send-btn" onclick="ErnOS.sendMessage()" aria-label="Send message">→</button>
                     <button class="voice-btn" id="voice-btn" onclick="ErnOS.toggleVoiceCall()" aria-label="Voice call" title="Voice Call">🎙️</button>

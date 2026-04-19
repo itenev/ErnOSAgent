@@ -4,7 +4,7 @@
 //! Axum web server — thin router orchestrator. Handlers live in `handlers/`.
 
 use crate::web::state::AppState;
-use crate::web::handlers::{system, sessions, memory, scheduler, onboarding, api_keys, agents, content, tts, codes, platforms, voice, video};
+use crate::web::handlers::{system, sessions, memory, scheduler, onboarding, api_keys, agents, content, tts, codes, platforms, voice, video, upload, version};
 use anyhow::Result;
 use axum::{Router, routing::{get, post, put, delete}};
 use tower_http::cors::CorsLayer;
@@ -99,6 +99,14 @@ pub async fn run(state: AppState, addr: &str) -> Result<()> {
         // REST API — API Keys
         .route("/api/api-keys", get(api_keys::get_keys))
         .route("/api/api-keys", put(api_keys::save_keys))
+        // REST API — File Upload
+        .route("/api/upload", post(upload::upload_file))
+        // REST API — Version Management
+        .route("/api/version", get(version::get_version))
+        .route("/api/version/check", get(version::check_updates))
+        .route("/api/version/update", post(version::update_version))
+        .route("/api/version/rollback", post(version::rollback_version))
+        .route("/api/version/history", get(version::version_history))
         // WebSocket
         .route("/ws", get(crate::web::ws::ws_handler))
         .route("/ws/voice", get(voice::ws_voice_handler))

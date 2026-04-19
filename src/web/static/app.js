@@ -1374,7 +1374,7 @@ const ErnOS = (() => {
         if (view === 'interpretability') loadInterpretabilityView();
         if (view === 'steering') loadSteeringView();
         if (view === 'logs') loadLogsView();
-        if (view === 'settings') loadSettingsView();
+        if (view === 'settings') { loadSettingsView(); setTimeout(loadVersionInfo, 100); }
         if (view === 'identity') loadIdentityView();
         if (view === 'agents') loadAgentsView();
         if (view === 'scheduler') loadSchedulerView();
@@ -1936,6 +1936,23 @@ const ErnOS = (() => {
                     </div>
                 </div>
 
+                <!-- System Version -->
+                <div class="settings-card">
+                    <div class="card-title"><span class="title-icon">🔄</span> System Version</div>
+                    <div id="version-info" class="setting-row">
+                        <span class="label-desc">Loading version info...</span>
+                    </div>
+                    <div class="setting-row" style="gap:10px">
+                        <button class="save-prompt-btn" onclick="ErnOS.checkForUpdates()" id="check-updates-btn">Check for Updates</button>
+                        <button class="save-prompt-btn" onclick="ErnOS.updateNow()" id="update-now-btn" style="display:none;background:var(--accent)">Update Now</button>
+                    </div>
+                    <div id="update-status" style="display:none;padding:8px 12px;border-radius:8px;margin-top:8px;font-size:13px"></div>
+                    <div style="margin-top:16px">
+                        <button class="save-prompt-btn" onclick="ErnOS.toggleVersionHistory()" style="background:transparent;border:1px solid var(--border);color:var(--text-secondary)">Version History ▾</button>
+                        <div id="version-history" style="display:none;margin-top:10px;max-height:400px;overflow-y:auto"></div>
+                    </div>
+                </div>
+
                 <!-- Danger Zone -->
                 <div class="settings-card danger-zone">
                     <div class="card-title"><span class="title-icon">⚠️</span> Danger Zone</div>
@@ -2405,13 +2422,36 @@ const ErnOS = (() => {
     // ─── Multimodal ───
     function handleFilesSelected(fileList) {
         Array.from(fileList).forEach(file => {
-            if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) return;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                attachedFiles.push({ name: file.name, dataUrl: e.target.result, type: file.type });
-                renderFilePreview();
-            };
-            reader.readAsDataURL(file);
+            if (file.type.startsWith('image/') || file.type.startsWith('video/')) {
+                // Images/video: base64 data URL for inline preview + vision
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    attachedFiles.push({ name: file.name, dataUrl: e.target.result, type: file.type, isMedia: true });
+                    renderFilePreview();
+                };
+                reader.readAsDataURL(file);
+            } else {
+                // Documents/other: upload to server, get path back
+                const formData = new FormData();
+                formData.append('file', file);
+                fetch('/api/upload', { method: 'POST', body: formData })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.files && data.files.length > 0) {
+                            const uploaded = data.files[0];
+                            attachedFiles.push({
+                                name: uploaded.original_name,
+                                path: uploaded.path,
+                                type: file.type || 'application/octet-stream',
+                                size: uploaded.size,
+                                isMedia: false,
+                            });
+                            renderFilePreview();
+                            showToast('File uploaded: ' + uploaded.original_name, 'success');
+                        }
+                    })
+                    .catch(e => showToast('Upload failed: ' + e.message, 'error'));
+            }
         });
     }
 
@@ -2422,7 +2462,18 @@ const ErnOS = (() => {
         attachedFiles.forEach((f, i) => {
             const item = document.createElement('div');
             item.className = 'file-preview-item';
-            item.innerHTML = `<img src="${f.dataUrl}" alt="${escapeHtml(f.name)}"><button class="remove-file" onclick="ErnOS.removeFile(${i})">×</button>`;
+            if (f.isMedia && f.dataUrl) {
+                item.innerHTML = `<img src="${f.dataUrl}" alt="${escapeHtml(f.name)}"><button class="remove-file" onclick="ErnOS.removeFile(${i})">×</button>`;
+            } else {
+                const ext = f.name.split('.').pop() || '?';
+                const sizeStr = f.size ? (f.size > 1024*1024 ? (f.size/1024/1024).toFixed(1)+'MB' : (f.size/1024).toFixed(0)+'KB') : '';
+                item.innerHTML = `<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg-secondary);border-radius:6px;font-size:12px">
+                    <span style="font-size:18px">📄</span>
+                    <span style="color:var(--text-primary);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(f.name)}</span>
+                    <span style="color:var(--text-tertiary)">${sizeStr}</span>
+                    <button class="remove-file" onclick="ErnOS.removeFile(${i})" style="position:static;background:var(--bg-tertiary);width:20px;height:20px;font-size:12px">×</button>
+                </div>`;
+            }
             preview.appendChild(item);
         });
     }
@@ -2636,6 +2687,8 @@ const ErnOS = (() => {
         if (fileInput) fileInput.addEventListener('change', (e) => handleFilesSelected(e.target.files));
         // Check onboarding status
         await checkOnboarding();
+        // Load version badge in sidebar
+        loadVersionBadge();
     }
 
     // ─── Onboarding ───
@@ -2935,6 +2988,177 @@ const ErnOS = (() => {
         } catch (e) { console.error('Failed to delete team:', e); }
     }
 
+    // ─── Version Management ───
+
+    async function loadVersionBadge() {
+        try {
+            const resp = await fetch('/api/version');
+            const v = await resp.json();
+            const badge = document.getElementById('version-badge');
+            if (badge && v.hash) {
+                badge.textContent = v.hash;
+                badge.style.cssText = 'font-size:10px;color:var(--text-tertiary);font-family:monospace;margin-left:auto';
+            }
+            // Auto-check for updates
+            setTimeout(autoCheckUpdates, 3000);
+        } catch (e) { /* ignore */ }
+    }
+
+    async function autoCheckUpdates() {
+        try {
+            const resp = await fetch('/api/version/check');
+            const data = await resp.json();
+            if (!data.up_to_date && data.commits_behind > 0) {
+                const badge = document.getElementById('settings-update-badge');
+                if (badge) {
+                    badge.style.display = 'inline';
+                    badge.title = data.commits_behind + ' update(s) available';
+                }
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    async function loadVersionInfo() {
+        try {
+            const resp = await fetch('/api/version');
+            const v = await resp.json();
+            const el = document.getElementById('version-info');
+            if (el) {
+                el.innerHTML = `
+                    <div style="display:flex;flex-direction:column;gap:4px;width:100%">
+                        <div style="display:flex;justify-content:space-between;align-items:center">
+                            <span style="font-weight:600;color:var(--text-primary)">Current Version</span>
+                            <code style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px">${escapeHtml(v.hash || '?')}</code>
+                        </div>
+                        <div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(v.message || '')}</div>
+                        <div style="font-size:11px;color:var(--text-tertiary)">${escapeHtml(v.date || '')} · ${escapeHtml(v.branch || '')}${v.dirty ? ' · <span style="color:var(--warning)">uncommitted changes</span>' : ''}</div>
+                    </div>`;
+            }
+        } catch (e) {
+            const el = document.getElementById('version-info');
+            if (el) el.innerHTML = '<span class="label-desc">Failed to load version info</span>';
+        }
+    }
+
+    async function checkForUpdates() {
+        const btn = document.getElementById('check-updates-btn');
+        const status = document.getElementById('update-status');
+        const updateBtn = document.getElementById('update-now-btn');
+        if (btn) btn.textContent = 'Checking...';
+        try {
+            const resp = await fetch('/api/version/check');
+            const data = await resp.json();
+            status.style.display = 'block';
+            if (data.up_to_date) {
+                status.style.background = 'rgba(34,197,94,0.1)';
+                status.style.color = 'var(--success, #22c55e)';
+                status.innerHTML = '✅ You are up to date';
+                if (updateBtn) updateBtn.style.display = 'none';
+                const badge = document.getElementById('settings-update-badge');
+                if (badge) badge.style.display = 'none';
+            } else {
+                status.style.background = 'rgba(59,130,246,0.1)';
+                status.style.color = 'var(--accent, #3b82f6)';
+                status.innerHTML = `🔄 <strong>${data.commits_behind}</strong> update(s) available`;
+                if (data.new_commits) {
+                    status.innerHTML += '<div style="margin-top:6px;font-size:11px;max-height:120px;overflow-y:auto">' +
+                        data.new_commits.map(c => '<div style="padding:2px 0">' + escapeHtml(c) + '</div>').join('') + '</div>';
+                }
+                if (updateBtn) updateBtn.style.display = 'inline-block';
+            }
+        } catch (e) {
+            status.style.display = 'block';
+            status.style.background = 'rgba(239,68,68,0.1)';
+            status.style.color = 'var(--danger, #ef4444)';
+            status.innerHTML = '❌ Failed to check: ' + escapeHtml(e.message);
+        }
+        if (btn) btn.textContent = 'Check for Updates';
+    }
+
+    async function updateNow() {
+        if (!confirm('⚠️ UPDATE\n\nThis will pull the latest version from GitHub and recompile.\nThe server will restart — you will be disconnected briefly.\n\nContinue?')) return;
+        const status = document.getElementById('update-status');
+        status.style.display = 'block';
+        status.style.background = 'rgba(59,130,246,0.1)';
+        status.style.color = 'var(--accent)';
+        status.innerHTML = '⏳ Updating... (pulling + recompiling, this takes ~30s)';
+        try {
+            const resp = await fetch('/api/version/update', { method: 'POST' });
+            const data = await resp.json();
+            if (data.success) {
+                status.innerHTML = '✅ ' + escapeHtml(data.message || 'Update applied') + '<br>Reconnecting...';
+                // Server will restart — reconnect loop handles it
+            } else {
+                status.style.background = 'rgba(239,68,68,0.1)';
+                status.style.color = 'var(--danger)';
+                status.innerHTML = '❌ ' + escapeHtml(data.error || 'Update failed') + '<br>' + escapeHtml(data.action || '');
+            }
+        } catch (e) {
+            status.innerHTML = '⏳ Server is restarting... reconnecting shortly.';
+        }
+    }
+
+    async function toggleVersionHistory() {
+        const container = document.getElementById('version-history');
+        if (container.style.display !== 'none') {
+            container.style.display = 'none';
+            return;
+        }
+        container.style.display = 'block';
+        container.innerHTML = '<span class="label-desc">Loading history...</span>';
+        try {
+            const resp = await fetch('/api/version/history');
+            const data = await resp.json();
+            if (!data.commits || data.commits.length === 0) {
+                container.innerHTML = '<span class="label-desc">No history available</span>';
+                return;
+            }
+            container.innerHTML = data.commits.map(c => `
+                <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;${c.current ? 'background:rgba(59,130,246,0.1)' : ''}">
+                    <span style="font-size:12px;color:${c.current ? 'var(--accent)' : 'var(--text-tertiary)'};font-weight:${c.current ? '700' : '400'}">${c.current ? '●' : '○'}</span>
+                    <code style="font-size:11px;min-width:60px;color:var(--text-secondary)">${escapeHtml(c.short_hash)}</code>
+                    <span style="font-size:12px;color:var(--text-primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.message)}</span>
+                    <span style="font-size:10px;color:var(--text-tertiary);min-width:80px">${escapeHtml((c.date || '').substring(0,10))}</span>
+                    ${c.current ? '<span style="font-size:10px;color:var(--accent);font-weight:600">current</span>' : 
+                        `<button onclick="ErnOS.revertToVersion('${c.hash}','${escapeHtml(c.short_hash)}','${escapeHtml(c.message).replace(/'/g,'')}')" 
+                         style="font-size:10px;padding:2px 8px;border-radius:4px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);cursor:pointer">Revert</button>`}
+                </div>
+            `).join('');
+        } catch (e) {
+            container.innerHTML = '<span class="label-desc">Failed to load history</span>';
+        }
+    }
+
+    async function revertToVersion(hash, shortHash, message) {
+        if (!confirm(`⚠️ REVERT\n\nRollback to version ${shortHash}?\n"${message}"\n\nThis will recompile and restart the server.\nLocal changes will be stashed.\n\nContinue?`)) return;
+        const status = document.getElementById('update-status');
+        if (status) {
+            status.style.display = 'block';
+            status.style.background = 'rgba(245,158,11,0.1)';
+            status.style.color = 'var(--warning, #f59e0b)';
+            status.innerHTML = '⏳ Reverting to ' + escapeHtml(shortHash) + '... (recompiling ~30s)';
+        }
+        try {
+            const resp = await fetch('/api/version/rollback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hash }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                if (status) status.innerHTML = '✅ Reverted to ' + escapeHtml(shortHash) + '. Reconnecting...';
+            } else {
+                if (status) {
+                    status.style.background = 'rgba(239,68,68,0.1)';
+                    status.style.color = 'var(--danger)';
+                    status.innerHTML = '❌ ' + escapeHtml(data.error || 'Revert failed');
+                }
+            }
+        } catch (e) {
+            if (status) status.innerHTML = '⏳ Server is restarting... reconnecting shortly.';
+        }
+    }
+
     // ─── Public API ───
     return {
         init, sendMessage, newChat, switchSession, deleteSession, stopGeneration,
@@ -2970,6 +3194,8 @@ const ErnOS = (() => {
         copyArtifact,
         // Voice/Video
         toggleVoiceCall, toggleVideoCall, toggleCallMute, endCall,
+        // Version management
+        checkForUpdates, updateNow, toggleVersionHistory, revertToVersion,
     };
 })();
 

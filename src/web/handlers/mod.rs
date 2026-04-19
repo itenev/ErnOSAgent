@@ -13,3 +13,5 @@ pub mod codes;
 pub mod platforms;
 pub mod voice;
 pub mod video;
+pub mod upload;
+pub mod version;
