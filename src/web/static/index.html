@@ -369,59 +369,59 @@
                     <p class="subtitle">Configure appearance, model, observer, autonomy, and engine</p>
                 </div>
 
-                <!-- Autonomy Mode -->
-                <div class="panel-header" style="margin-top:20px">
-                    <h2>🤖 Autonomy Mode</h2>
-                    <p class="subtitle">Control how much the agent does without asking</p>
-                </div>
-                <div class="autonomy-controls" id="autonomy-controls">
-                    <div class="autonomy-selector">
-                        <label class="autonomy-option" id="autonomy-interactive">
-                            <input type="radio" name="autonomy" value="interactive" onchange="ErnOS.setAutonomy('interactive')">
-                            <div class="autonomy-card">
-                                <span class="autonomy-icon">🛑</span>
-                                <strong>Interactive</strong>
-                                <p>Ask before every tool use. Full human control.</p>
+                <div class="settings-sections" id="settings-top-sections">
+                    <!-- Autonomy Mode -->
+                    <div class="settings-card">
+                        <div class="card-title"><span class="title-icon">🤖</span> Autonomy Mode</div>
+                        <div class="autonomy-selector" id="autonomy-controls">
+                            <label class="autonomy-option">
+                                <input type="radio" name="autonomy" value="interactive" onchange="ErnOS.setAutonomy('interactive')">
+                                <div class="autonomy-card">
+                                    <div class="autonomy-icon">🛑</div>
+                                    <div class="autonomy-name">Interactive</div>
+                                    <div class="autonomy-desc">Ask before every tool use</div>
+                                </div>
+                            </label>
+                            <label class="autonomy-option">
+                                <input type="radio" name="autonomy" value="supervised" checked onchange="ErnOS.setAutonomy('supervised')">
+                                <div class="autonomy-card">
+                                    <div class="autonomy-icon">👁️</div>
+                                    <div class="autonomy-name">Supervised</div>
+                                    <div class="autonomy-desc">Ask for destructive actions only</div>
+                                </div>
+                            </label>
+                            <label class="autonomy-option">
+                                <input type="radio" name="autonomy" value="autonomous" onchange="ErnOS.setAutonomy('autonomous')">
+                                <div class="autonomy-card">
+                                    <div class="autonomy-icon">🚀</div>
+                                    <div class="autonomy-name">Autonomous</div>
+                                    <div class="autonomy-desc">Execute all tools, report progress</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- System Snapshots -->
+                    <div class="settings-card">
+                        <div class="card-title"><span class="title-icon">📸</span> System Snapshots</div>
+                        <div class="setting-row" style="border:none;padding:0">
+                            <div class="setting-label">
+                                <span class="label-text">Create Checkpoint</span>
+                                <span class="label-desc">Atomic snapshot of code, memory, sessions, and config</span>
                             </div>
-                        </label>
-                        <label class="autonomy-option" id="autonomy-supervised">
-                            <input type="radio" name="autonomy" value="supervised" checked onchange="ErnOS.setAutonomy('supervised')">
-                            <div class="autonomy-card">
-                                <span class="autonomy-icon">👁️</span>
-                                <strong>Supervised</strong>
-                                <p>Ask for destructive actions only. Default mode.</p>
-                            </div>
-                        </label>
-                        <label class="autonomy-option" id="autonomy-autonomous">
-                            <input type="radio" name="autonomy" value="autonomous" onchange="ErnOS.setAutonomy('autonomous')">
-                            <div class="autonomy-card">
-                                <span class="autonomy-icon">🚀</span>
-                                <strong>Autonomous</strong>
-                                <p>Execute all tools without asking. Progress reports only.</p>
-                            </div>
-                        </label>
+                        </div>
+                        <div class="snapshot-row">
+                            <input type="text" id="snapshot-label" placeholder="Label (optional)" class="snapshot-input">
+                            <button class="snapshot-create-btn" onclick="ErnOS.createSnapshot()">📸 Create</button>
+                        </div>
+                        <div id="snapshots-container">
+                            <p class="empty-state" style="font-size:12px;padding:12px 0">Loading snapshots...</p>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Atomic State Checkpoints -->
-                <div class="panel-header" style="margin-top:30px">
-                    <h2>📸 System Snapshots</h2>
-                    <p class="subtitle">Atomic checkpoints: code + memory + sessions + config</p>
-                </div>
-                <div class="snapshot-actions" style="margin-bottom:16px">
-                    <input type="text" id="snapshot-label" placeholder="Snapshot label (optional)" class="snapshot-input">
-                    <button class="btn btn-primary" onclick="ErnOS.createSnapshot()">Create Snapshot</button>
-                </div>
-                <div id="snapshots-container">
-                    <p class="empty-state">Loading snapshots...</p>
-                </div>
-
-                <!-- Existing Settings -->
-                <div class="panel-header" style="margin-top:30px">
-                    <h2>🔧 Engine Configuration</h2>
-                    <p class="subtitle">Provider, observer, and system settings</p>
-                </div>
-                <div class="settings-sections" id="settings-sections">
+                <!-- Engine Configuration (dynamically loaded) -->
+                <div class="settings-sections" id="settings-sections" style="margin-top:16px">
                     <p class="empty-state">Loading settings...</p>
                 </div>
             </div>
