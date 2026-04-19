@@ -111,7 +111,14 @@ fn build_config(
     let mut config = crate::config::AppConfig::default();
     config.general.data_dir = data_path.to_path_buf();
     config.general.active_provider = "llamacpp".to_string();
-    config.llamacpp.api_url = provider_url.to_string();
+    // Parse port from provider URL (e.g. "http://127.0.0.1:8080")
+    let port: u16 = provider_url
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.trim_end_matches('/').parse().ok())
+        .unwrap_or(8080);
+    config.llamacpp.port = port;
+    config.llamacpp.server_binary = data_path.join("bin/llama-server").to_string_lossy().to_string();
     config.web.port = 3000;
     config.web.open_browser = false;
     config

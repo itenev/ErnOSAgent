@@ -6,6 +6,10 @@ description = "High-performance, model-neutral Rust AI agent engine with dual-la
 license = "MIT"
 default-run = "ern-os"
 
+[lib]
+name = "ern_os"
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = ["file-extract", "desktop"]
 discord = ["serenity"]
@@ -33,7 +37,7 @@ futures-util = "0.3"
 async-trait = "0.1"
 
 # HTTP + streaming
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -98,7 +102,7 @@ teloxide = { version = "0.13", features = ["macros"], optional = true }
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [profile.release]
 opt-level = 3

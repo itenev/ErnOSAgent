@@ -6,3 +6,5 @@ data/
 *.log
 *.pkg
 implementation_plan.md
+android/app/build/
+android/app/src/main/jniLibs/

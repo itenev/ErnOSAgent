@@ -101,7 +101,7 @@ class EngineService : Service() {
                 "-ngl", "99",
             ).redirectErrorStream(true).start()
 
-            Log.i(TAG, "llama-server started (PID: ${llamaProcess?.pid()})")
+            Log.i(TAG, "llama-server started")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start llama-server: ${e.message}", e)
         }
