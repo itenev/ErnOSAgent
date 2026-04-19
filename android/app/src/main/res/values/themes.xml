@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark theme matching the Ern-OS WebUI -->
+    <style name="Theme.ErnOS" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#00FF88</item>
+        <item name="colorPrimaryDark">#06060e</item>
+        <item name="colorAccent">#00FF88</item>
+        <item name="android:windowBackground">#06060e</item>
+        <item name="android:statusBarColor">#06060e</item>
+        <item name="android:navigationBarColor">#06060e</item>
+    </style>
+
+    <!-- Splash theme — same dark bg while engine boots -->
+    <style name="Theme.ErnOS.Splash" parent="Theme.ErnOS">
+        <item name="android:windowBackground">#06060e</item>
+    </style>
+</resources>

@@ -1,0 +1,6 @@
+# Android-specific Cargo config
+# This is applied when building inside android/ via cargo ndk
+# Forces cdylib output for JNI .so file
+
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-llog"]
