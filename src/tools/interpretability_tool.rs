@@ -123,7 +123,7 @@ fn list_labeled_features() -> Result<String> {
     let labels_path = std::path::Path::new("data/feature_labels.json");
     if labels_path.exists() {
         let content = std::fs::read_to_string(labels_path)?;
-        Ok(format!("Labeled features:\n{}", &content[..content.len().min(1000)]))
+        Ok(format!("Labeled features:\n{}", content))
     } else {
         Ok("No labeled features found. Train SAE and label features to populate.".to_string())
     }

@@ -111,8 +111,8 @@ async fn run_test_gate(root: &PathBuf) -> Result<(), String> {
             "RECOMPILE BLOCKED: Tests failed.\n\n\
             Fix with codebase_edit, then call system_recompile again.\n\n\
             Output:\n{}\n{}",
-            &stdout[..stdout.len().min(3000)],
-            &stderr[..stderr.len().min(3000)]
+            &stdout,
+            &stderr
         ));
     }
 

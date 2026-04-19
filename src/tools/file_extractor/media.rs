@@ -24,7 +24,7 @@ pub fn extract_image(path: &Path, ext: &str) -> Result<ExtractionResult> {
         _ => "image/png",
     };
 
-    let data_url = format!("data:{};base64,{}", mime, &b64[..b64.len().min(100000)]);
+    let data_url = format!("data:{};base64,{}", mime, b64);
     let size_kb = bytes.len() / 1024;
 
     let mut result = make_result(

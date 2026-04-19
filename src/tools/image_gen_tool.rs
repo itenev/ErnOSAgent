@@ -59,7 +59,7 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
 
     // Return markdown image tag + base64 thumbnail for model self-inspection via vision
     let image_url = format!("/api/images/{}", filename);
-    let thumbnail = format!("data:image/png;base64,{}", &b64[..b64.len().min(50000)]);
+    let thumbnail = format!("data:image/png;base64,{}", b64);
 
     Ok(format!(
         "![{prompt}]({image_url})\n\n\

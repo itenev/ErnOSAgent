@@ -163,7 +163,7 @@ pub fn extract_xml(path: &Path) -> Result<ExtractionResult> {
     let raw = std::fs::read_to_string(path)?;
     let text = super::extract_text_from_xml(&raw);
     if text.trim().is_empty() {
-        Ok(make_result(format!("[XML]\n\n{}", &raw[..raw.len().min(50000)]), "application/xml"))
+        Ok(make_result(format!("[XML]\n\n{}", raw), "application/xml"))
     } else {
         Ok(make_result(format!("[XML]\n\n{}", text), "application/xml"))
     }

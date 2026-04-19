@@ -153,7 +153,7 @@ async fn run_custom_command(cmd: &str) -> (bool, String) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             let result = if stdout.is_empty() { stderr.to_string() } else { stdout.to_string() };
-            (output.status.success(), result.chars().take(500).collect())
+            (output.status.success(), result)
         }
         Err(e) => (false, format!("Exec failed: {}", e)),
     }
