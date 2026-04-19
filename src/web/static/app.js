@@ -51,6 +51,7 @@ const ErnOS = (() => {
             case 'status':          onStatus(msg); break;
             case 'done':            onDone(); break;
             case 'error':           onError(msg); break;
+            case 'autonomy_state':  handleAutonomyResponse(msg); break;
         }
     }
 
@@ -1374,7 +1375,7 @@ const ErnOS = (() => {
         if (view === 'interpretability') loadInterpretabilityView();
         if (view === 'steering') loadSteeringView();
         if (view === 'logs') loadLogsView();
-        if (view === 'settings') { loadSettingsView(); setTimeout(loadVersionInfo, 100); }
+        if (view === 'settings') { loadSettingsView(); loadAutonomyState(); loadSnapshots(); setTimeout(loadVersionInfo, 100); }
         if (view === 'identity') loadIdentityView();
         if (view === 'agents') loadAgentsView();
         if (view === 'scheduler') loadSchedulerView();
@@ -3159,6 +3160,113 @@ const ErnOS = (() => {
         }
     }
 
+    // ─── Autonomy Controls ───
+    function loadAutonomyState() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'get_autonomy' }));
+        }
+    }
+
+    function setAutonomy(level) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'set_autonomy', level }));
+            showToast(`Autonomy set to ${level}`, 'success');
+        }
+    }
+
+    function handleAutonomyResponse(data) {
+        const level = data.level || 'supervised';
+        const radio = document.querySelector(`input[name="autonomy"][value="${level}"]`);
+        if (radio) radio.checked = true;
+    }
+
+    // ─── System Snapshots ───
+    async function loadSnapshots() {
+        const container = document.getElementById('snapshots-container');
+        if (!container) return;
+        try {
+            const resp = await fetch('/api/state-checkpoint');
+            if (!resp.ok) {
+                container.innerHTML = '<p class="empty-state">Snapshots not available</p>';
+                return;
+            }
+            const data = await resp.json();
+            if (!data.checkpoints || data.checkpoints.length === 0) {
+                container.innerHTML = '<p class="empty-state">No snapshots yet</p>';
+                return;
+            }
+            container.innerHTML = data.checkpoints.map(c => {
+                const time = new Date(c.timestamp).toLocaleString();
+                const commit = c.git_commit ? c.git_commit.substring(0, 7) : '—';
+                return `<div class="snapshot-entry">
+                    <div class="snapshot-meta">
+                        <div class="snapshot-label">${escapeHtml(c.label || c.id)}</div>
+                        <div class="snapshot-time">${time}</div>
+                        <div class="snapshot-commit">commit ${commit}</div>
+                    </div>
+                    <div class="snapshot-actions-row">
+                        <button class="snapshot-btn restore" onclick="ErnOS.restoreSnapshot('${c.id}')">↩ Restore</button>
+                        <button class="snapshot-btn delete" onclick="ErnOS.deleteSnapshot('${c.id}')">✕</button>
+                    </div>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            container.innerHTML = '<p class="empty-state">Failed to load snapshots</p>';
+        }
+    }
+
+    async function createSnapshot() {
+        const labelEl = document.getElementById('snapshot-label');
+        const label = labelEl ? labelEl.value.trim() : '';
+        try {
+            const resp = await fetch('/api/state-checkpoint', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label: label || 'Manual snapshot' }),
+            });
+            if (resp.ok) {
+                showToast('Snapshot created', 'success');
+                if (labelEl) labelEl.value = '';
+                loadSnapshots();
+            } else {
+                const err = await resp.text();
+                showToast('Snapshot failed: ' + err, 'error');
+            }
+        } catch (e) {
+            showToast('Snapshot failed: ' + e.message, 'error');
+        }
+    }
+
+    async function restoreSnapshot(id) {
+        if (!confirm('Restore this snapshot? Current state will be overwritten.')) return;
+        try {
+            const resp = await fetch(`/api/state-checkpoint/${id}/restore`, { method: 'POST' });
+            if (resp.ok) {
+                showToast('Snapshot restored — reloading...', 'success');
+                setTimeout(() => location.reload(), 2000);
+            } else {
+                showToast('Restore failed', 'error');
+            }
+        } catch (e) {
+            showToast('Restore failed: ' + e.message, 'error');
+        }
+    }
+
+    async function deleteSnapshot(id) {
+        if (!confirm('Delete this snapshot?')) return;
+        try {
+            const resp = await fetch(`/api/state-checkpoint/${id}`, { method: 'DELETE' });
+            if (resp.ok) {
+                showToast('Snapshot deleted', 'success');
+                loadSnapshots();
+            } else {
+                showToast('Delete failed', 'error');
+            }
+        } catch (e) {
+            showToast('Delete failed: ' + e.message, 'error');
+        }
+    }
+
     // ─── Public API ───
     return {
         init, sendMessage, newChat, switchSession, deleteSession, stopGeneration,
@@ -3196,6 +3304,8 @@ const ErnOS = (() => {
         toggleVoiceCall, toggleVideoCall, toggleCallMute, endCall,
         // Version management
         checkForUpdates, updateNow, toggleVersionHistory, revertToVersion,
+        // Autonomy & Snapshots
+        setAutonomy, createSnapshot, restoreSnapshot, deleteSnapshot,
     };
 })();
 
