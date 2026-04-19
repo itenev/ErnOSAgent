@@ -64,18 +64,37 @@ pub extern "C" fn Java_com_ernos_app_EngineService_startEngine(
 
         let config = build_config(&data_path, &provider_url);
 
-        let provider = match create_provider(&config).await {
+        // Create provider (instant — no blocking health check yet)
+        let provider = match create_provider_no_wait(&config) {
             Some(p) => p,
             None => return,
         };
 
         let model_spec = provider.get_model_spec().await.unwrap_or_default();
 
-        let state = match build_app_state(&config, provider, model_spec) {
+        let state = match build_app_state(&config, provider.clone(), model_spec) {
             Some(s) => s,
             None => return,
         };
 
+        // Start provider health check in background (non-blocking)
+        tokio::spawn(async move {
+            tracing::info!("Background: waiting for provider health...");
+            let mut retries = 0;
+            while !provider.health().await {
+                retries += 1;
+                if retries > 120 {
+                    tracing::warn!("Provider not healthy after 120s — running without inference");
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+            if retries <= 120 {
+                tracing::info!(retries, "Provider healthy");
+            }
+        });
+
+        // Start web server IMMEDIATELY — UI is responsive while provider connects
         let addr = "0.0.0.0:3000";
         tracing::info!(addr, "Ern-OS Android WebUI starting");
 
@@ -124,31 +143,21 @@ fn build_config(
     config
 }
 
-/// Create and health-check the inference provider.
+/// Create the inference provider without blocking on health check.
 #[cfg(feature = "android")]
-async fn create_provider(
+fn create_provider_no_wait(
     config: &crate::config::AppConfig,
 ) -> Option<std::sync::Arc<dyn crate::provider::Provider>> {
-    let provider: std::sync::Arc<dyn crate::provider::Provider> = match crate::provider::create_provider(config) {
-        Ok(p) => std::sync::Arc::from(p),
+    match crate::provider::create_provider(config) {
+        Ok(p) => {
+            tracing::info!("Provider created (health check deferred to background)");
+            Some(std::sync::Arc::from(p))
+        }
         Err(e) => {
             tracing::error!(error = %e, "Failed to create provider on Android");
-            return None;
+            None
         }
-    };
-
-    tracing::info!("Waiting for provider health...");
-    let mut retries = 0;
-    while !provider.health().await {
-        retries += 1;
-        if retries > 120 {
-            tracing::error!("Provider not healthy after 120s — engine starting without provider");
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
-
-    Some(provider)
 }
 
 /// Build AppState with clean error handling — logs and returns None on failure.

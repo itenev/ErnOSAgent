@@ -20,6 +20,13 @@ pub async fn run(state: AppState, addr: &str) -> Result<()> {
         .route("/", get(content::index))
         .route("/app.css", get(content::css))
         .route("/app.js", get(content::js))
+        // Vendor assets (embedded in binary for Android compat)
+        .route("/vendor/highlight.min.js", get(content::vendor_highlight_js))
+        .route("/vendor/katex.min.js", get(content::vendor_katex_js))
+        .route("/vendor/auto-render.min.js", get(content::vendor_auto_render_js))
+        .route("/vendor/mermaid.min.js", get(content::vendor_mermaid_js))
+        .route("/vendor/github-dark.min.css", get(content::vendor_github_dark_css))
+        .route("/vendor/katex.min.css", get(content::vendor_katex_css))
         .route("/api/images/{filename}", get(content::serve_image))
         // REST API — Sessions
         .route("/api/sessions", get(sessions::list_sessions))

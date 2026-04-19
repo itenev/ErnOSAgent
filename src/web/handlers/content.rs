@@ -1,4 +1,4 @@
-//! Static content handlers — HTML, CSS, JS, and dynamically generated images.
+//! Static content handlers — HTML, CSS, JS, vendor libs, and dynamically generated images.
 
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -22,9 +22,52 @@ pub async fn js() -> impl IntoResponse {
     ], include_str!("../static/app.js"))
 }
 
+// ─── Vendor assets (embedded for Android compat) ───
+
+pub async fn vendor_highlight_js() -> impl IntoResponse {
+    ([
+        ("content-type", "application/javascript; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/highlight.min.js"))
+}
+
+pub async fn vendor_katex_js() -> impl IntoResponse {
+    ([
+        ("content-type", "application/javascript; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/katex.min.js"))
+}
+
+pub async fn vendor_auto_render_js() -> impl IntoResponse {
+    ([
+        ("content-type", "application/javascript; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/auto-render.min.js"))
+}
+
+pub async fn vendor_mermaid_js() -> impl IntoResponse {
+    ([
+        ("content-type", "application/javascript; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/mermaid.min.js"))
+}
+
+pub async fn vendor_github_dark_css() -> impl IntoResponse {
+    ([
+        ("content-type", "text/css; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/github-dark.min.css"))
+}
+
+pub async fn vendor_katex_css() -> impl IntoResponse {
+    ([
+        ("content-type", "text/css; charset=utf-8"),
+        ("cache-control", "public, max-age=86400"),
+    ], include_str!("../static/vendor/katex.min.css"))
+}
+
 /// Serve generated images from `data/images/{filename}`.
 pub async fn serve_image(Path(filename): Path<String>) -> impl IntoResponse {
-    // Sanitize: reject path traversal
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return (StatusCode::BAD_REQUEST, "Invalid filename".to_string()).into_response();
     }

@@ -13,6 +13,8 @@ import androidx.appcompat.app.AppCompatActivity
  * Main activity — fullscreen WebView pointing to the local Ern-OS engine.
  * The engine runs as a foreground service (EngineService) so it persists
  * when the user switches apps.
+ *
+ * Displays a loading screen while the engine boots, polling until ready.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -55,9 +57,7 @@ class MainActivity : AppCompatActivity() {
             allowFileAccess = true
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            // Enable WebSocket support
             javaScriptCanOpenWindowsAutomatically = true
-            // Viewport
             useWideViewPort = true
             loadWithOverviewMode = true
         }
@@ -67,19 +67,117 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?, request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                // Engine might still be starting — retry after delay
-                view?.postDelayed({
-                    view.loadUrl("http://127.0.0.1:3000")
-                }, 2000)
+                // Only retry for the main frame, not sub-resources
+                if (request?.isForMainFrame == true) {
+                    view?.postDelayed({
+                        view.loadUrl("http://127.0.0.1:3000")
+                    }, 2000)
+                }
             }
         }
 
         webView.webChromeClient = WebChromeClient()
 
-        // Wait for engine to start, then load
-        webView.postDelayed({
-            webView.loadUrl("http://127.0.0.1:3000")
-        }, 3000) // Give engine 3s to boot
+        // Show loading screen immediately, then poll for engine readiness
+        showLoadingScreen()
+    }
+
+    /** Load an inline HTML loading page that polls the engine health endpoint. */
+    private fun showLoadingScreen() {
+        val loadingHtml = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body {
+                        background: #06060e;
+                        color: #e0e0e0;
+                        font-family: -apple-system, sans-serif;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        min-height: 100vh;
+                        padding: 24px;
+                    }
+                    .logo {
+                        font-size: 3rem;
+                        font-weight: 700;
+                        background: linear-gradient(135deg, #00FF88, #3b82f6);
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                        margin-bottom: 24px;
+                    }
+                    .spinner {
+                        width: 40px; height: 40px;
+                        border: 3px solid rgba(0,255,136,0.15);
+                        border-top-color: #00FF88;
+                        border-radius: 50%;
+                        animation: spin 1s linear infinite;
+                        margin-bottom: 20px;
+                    }
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                    .status {
+                        font-size: 0.9rem;
+                        color: rgba(255,255,255,0.5);
+                        text-align: center;
+                    }
+                    .dots::after {
+                        content: '';
+                        animation: dots 1.5s steps(4, end) infinite;
+                    }
+                    @keyframes dots {
+                        0% { content: ''; }
+                        25% { content: '.'; }
+                        50% { content: '..'; }
+                        75% { content: '...'; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="logo">Ern-OS</div>
+                <div class="spinner"></div>
+                <div class="status" id="status">Starting engine<span class="dots"></span></div>
+                <script>
+                    let attempts = 0;
+                    function checkEngine() {
+                        attempts++;
+                        const status = document.getElementById('status');
+                        fetch('http://127.0.0.1:3000/api/health')
+                            .then(r => {
+                                if (r.ok) {
+                                    status.innerHTML = 'Connected!';
+                                    setTimeout(() => {
+                                        window.location.href = 'http://127.0.0.1:3000';
+                                    }, 300);
+                                } else {
+                                    scheduleRetry();
+                                }
+                            })
+                            .catch(() => {
+                                if (attempts < 10) {
+                                    status.innerHTML = 'Starting engine<span class="dots"></span>';
+                                } else if (attempts < 30) {
+                                    status.innerHTML = 'Loading model<span class="dots"></span>';
+                                } else {
+                                    status.innerHTML = 'Still loading — this can take a minute on first launch<span class="dots"></span>';
+                                }
+                                scheduleRetry();
+                            });
+                    }
+                    function scheduleRetry() {
+                        setTimeout(checkEngine, 1000);
+                    }
+                    setTimeout(checkEngine, 1500);
+                </script>
+            </body>
+            </html>
+        """.trimIndent()
+
+        webView.loadDataWithBaseURL(null, loadingHtml, "text/html", "UTF-8", null)
     }
 
     override fun onBackPressed() {
