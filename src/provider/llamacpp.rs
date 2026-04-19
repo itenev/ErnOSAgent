@@ -177,32 +177,61 @@ impl Provider for LlamaCppProvider {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let body = self.build_chat_body(messages, tools, true, thinking);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .context(format!(
-                "Failed to connect to llama-server at {}. Is the server still running?",
-                url
-            ))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("llama-server returned {} at {}: {}", status, url, text);
-        }
-
-        let (tx, rx) = mpsc::channel(256);
-
-        tokio::spawn(async move {
-            if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone()).await {
-                let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+        // Retry on transient connection errors (connection reset/closed/refused)
+        let max_retries = 3;
+        let mut last_err = None;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(500 * (1 << (attempt - 1)));
+                tracing::warn!(
+                    attempt, delay_ms = delay.as_millis() as u64,
+                    "Retrying llama-server request after connection error"
+                );
+                tokio::time::sleep(delay).await;
             }
-        });
 
-        Ok(rx)
+            match self.client.post(&url).json(&body).send().await {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        anyhow::bail!("llama-server returned {} at {}: {}", status, url, text);
+                    }
+                    if attempt > 0 {
+                        tracing::info!(attempt, "llama-server request succeeded after retry");
+                    }
+                    let (tx, rx) = mpsc::channel(256);
+                    tokio::spawn(async move {
+                        if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone()).await {
+                            let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                        }
+                    });
+                    return Ok(rx);
+                }
+                Err(e) => {
+                    let is_connection_error = e.is_connect()
+                        || e.is_request()
+                        || format!("{}", e).contains("connection closed")
+                        || format!("{}", e).contains("connection reset");
+                    if is_connection_error && attempt < max_retries {
+                        tracing::warn!(
+                            attempt, error = %e,
+                            "llama-server connection error (will retry)"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e).context(format!(
+                        "Failed to connect to llama-server at {} after {} attempt(s). Is the server still running?",
+                        url, attempt + 1
+                    ));
+                }
+            }
+        }
+        Err(last_err.unwrap()).context(format!(
+            "Failed to connect to llama-server at {} after {} retries",
+            url, max_retries
+        ))
     }
 
     async fn chat_sync(
