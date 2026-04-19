@@ -1,8 +1,8 @@
 # Tools
 
-Ern-OS provides 27 tools across two layers. Tool schemas are defined in `src/tools/schema.rs` and `src/tools/schema_definitions.rs`. Execution is handled by `src/web/tool_dispatch.rs` which routes all tool calls through `AppState`.
+Ern-OS provides 29 tools across two layers. Tool schemas are defined in `src/tools/schema.rs` and `src/tools/schema_definitions.rs`. Execution is handled by `src/web/tool_dispatch.rs` (and `src/web/dispatch_planning.rs` for DAG/verification tools) which routes all tool calls through `AppState`.
 
-## Layer 1 Tools (18 tools)
+## Layer 1 Tools (20 tools)
 
 Available during fast reply (Layer 1). Defined by `layer1_tools()`.
 
@@ -26,10 +26,12 @@ Available during fast reply (Layer 1). Defined by `layer1_tools()`.
 | `interpretability` | SAE feature analysis and activation inspection |
 | `learning` | Manage the self-learning pipeline |
 | `system_logs` | Read-only access to error logs and self-edit audit trail |
+| `plan_and_execute` | Decompose a complex objective into a DAG of sub-tasks and execute via sub-agents |
+| `verify_code` | Run the verification pipeline (compile → test → browser) to validate code changes |
 
 Layer 1 decides whether to answer directly or escalate. If the task is simple, it responds immediately. If complex, it calls `start_react_system` to enter Layer 2.
 
-## Layer 2 Tools (25 tools)
+## Layer 2 Tools (27 tools)
 
 Available during the ReAct loop (Layer 2). Defined by `layer2_tools()`. Includes these tools (note: not all L1 tools carry over — L2 has its own curated set):
 
@@ -88,6 +90,14 @@ All memory tools route through `tool_dispatch.rs` which accesses `AppState.memor
 | `codebase_edit` | `codebase_edit.rs` | Edit source files: patch, insert, multi_patch, delete (auto-checkpointed, containment-gated) |
 | `system_recompile` | `compiler.rs` | 8-stage self-recompile: test → warning gate → build → changelog → resume → binary stage → log → hot-swap |
 | `checkpoint` | `checkpoint.rs` | Manage file snapshots: list, rollback, prune |
+| `system_logs` | `system_logs.rs` | Read logs: tail, errors, search, self_edits |
+
+### Planning & Verification Tools
+
+| Tool | File | Description |
+|------|------|-------------|
+| `plan_and_execute` | `dispatch_planning.rs` | Decompose objective into task DAG and execute via sub-agents (recursion-guarded) |
+| `verify_code` | `dispatch_planning.rs` | Run verification pipeline: compile → test → optional browser check |
 
 ## Tool Call Flow
 
@@ -115,7 +125,11 @@ All memory tools route through `tool_dispatch.rs` which accesses `AppState.memor
    ├─ "spawn_sub_agent" → sub_agent spawn + isolated loop
    ├─ "codebase_edit" → dispatch_codebase_edit(state, args)
    ├─ "system_recompile" → compiler::run_recompile()
-   ├─ "checkpoint" → dispatch_checkpoint(state, args)   └─ unknown → "Unknown tool: {name}"
+   ├─ "checkpoint" → dispatch_checkpoint(state, args)
+   ├─ "system_logs" → system_logs::execute(args, data_dir)
+   ├─ "verify_code" → dispatch_planning::dispatch_verify_code(args)
+   ├─ "plan_and_execute" → dispatch_planning::dispatch_plan_and_execute(state, args)
+   └─ unknown → "Unknown tool: {name}"
 4. ToolResult { tool_call_id, name, output, success } returned
 5. Result injected into message history for next iteration
 ```

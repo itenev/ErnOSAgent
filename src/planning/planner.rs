@@ -49,7 +49,7 @@ pub async fn replan_task(
     let response = provider.chat_sync(&messages, None).await
         .context("Replan LLM call failed")?;
 
-    let mut nodes = parse_task_nodes(&response)?;
+    let nodes = parse_task_nodes(&response)?;
     nodes.first().cloned().context("Replan produced no tasks")
 }
 

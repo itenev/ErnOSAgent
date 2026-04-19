@@ -8,13 +8,13 @@ Ern-OS is a **WebUI-centric** agent engine with autonomous learning. The WebUI i
 ┌─────────────────────────────────────────────────────┐
 │                   WebUI Hub (ws.rs)                  │
 │   WebSocket (/ws)  ·  Static Frontend (index.html)   │
-│   70 REST API endpoints · 12 Dashboard views         │
+│   80 REST API endpoints · 12 Dashboard views         │
 ├─────────────────────────────────────────────────────┤
 │                Internal Engine Services              │
 │                                                      │
 │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐  │
 │  │ Inference │ │ Observer │ │ Tools  │ │ Sessions │  │
-│  │  Engine   │ │  Audit   │ │27 Tools│ │ Manager  │  │
+│  │  Engine   │ │  Audit   │ │29 Tools│ │ Manager  │  │
 │  └──────────┘ └──────────┘ └────────┘ └──────────┘  │
 │                                                      │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐  │
@@ -45,7 +45,7 @@ Ern-OS is a **WebUI-centric** agent engine with autonomous learning. The WebUI i
 
 ## Module Map
 
-All source lives under `src/`. 18 top-level modules:
+All source lives under `src/`. 21 top-level modules:
 
 | Module | Path | Purpose |
 |--------|------|---------|
@@ -64,8 +64,11 @@ All source lives under `src/`. 18 top-level modules:
 | `scheduler` | `src/scheduler/` | Cron engine: job definitions (job.rs), persistent store (store.rs), 8 built-in system jobs |
 | `session` | `src/session/mod.rs` | JSON-backed session CRUD with pin, archive, fork, search, reactions |
 | `steering` | `src/steering/` | Activation steering vectors (vectors.rs), server interface (server.rs) |
-| `tools` | `src/tools/` | 27-tool registry: schema definitions + tool implementation files |
-| `web` | `src/web/` | Axum server (70 routes), WebSocket handler (chat + voice + video), 14 handler modules, state, static frontend |
+| `tools` | `src/tools/` | 29-tool registry: schema definitions + tool implementation files |
+| `web` | `src/web/` | Axum server (80 routes), WebSocket handler (chat + voice + video), 18 handler modules, state, static frontend |
+| `verification` | `src/verification/` | Compile → test → browser verification pipeline (compiler_check, browser, pipeline) |
+| `planning` | `src/planning/` | Task decomposition DAG (dag, planner, executor) |
+| `checkpoint` | `src/checkpoint/` | Atomic system-state snapshots and rollback (snapshot, restore) |
 
 ## Data Flow: User Message → Response
 
@@ -76,7 +79,7 @@ All source lives under `src/`. 18 top-level modules:
    └─ Includes: scratchpad (35%), lessons (25%), skills (15%),
       timeline (15%), knowledge graph (10%)
 4. Message ingested into Timeline memory
-5. Layer 1: Provider.chat() with layer1_tools (18 tools)
+5. Layer 1: Provider.chat() with layer1_tools (20 tools)
 6. Stream consumed via consume_silently()
    ├─ TextDelta → buffered (NOT sent to user yet)
    ├─ ToolCall "start_react_system" → escalate to Layer 2
@@ -117,6 +120,8 @@ pub struct AppState {
     pub browser: Arc<RwLock<BrowserState>>,
     pub platforms: Arc<RwLock<PlatformRegistry>>,
     pub mutable_config: Arc<RwLock<AppConfig>>,
+    pub resume_message: Arc<RwLock<Option<String>>>,
+    pub sae: Arc<RwLock<Option<SaeState>>>,
 }
 ```
 
@@ -160,7 +165,7 @@ The `spawn_sub_agent` tool creates an isolated ReAct loop with:
 
 When the model emits multiple `ToolCalls` in a single response, they are dispatched concurrently via `futures::join_all`. All results are collected and injected as tool messages before the next inference turn.
 
-## REST API (70 routes)
+## REST API (80 routes)
 
 Organized by handler module in `src/web/handlers/`:
 
@@ -177,6 +182,11 @@ Organized by handler module in `src/web/handlers/`:
 | `codes.rs` | 1 route | code-server health |
 | `platforms.rs` | 5 routes | List, config get/put, connect, disconnect, platform ingest |
 | `content.rs` | 4 routes | Static file serving (index.html, app.css, app.js, images) |
+| `voice.rs` | 1 route (WS) | Voice call WebSocket |
+| `video.rs` | 1 route (WS) | Video call WebSocket |
+| `upload.rs` | 1 route | File upload |
+| `version.rs` | 5 routes | Version management, check updates, rollback, history |
+| `checkpoint.rs` | 4 routes | Atomic state checkpoint create/list/restore/delete |
 
 ## Background Scheduler (Cron Engine)
 

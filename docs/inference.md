@@ -18,7 +18,7 @@ The inference engine uses a **dual-layer architecture** defined across `src/infe
 The default path for simple interactions. The provider receives:
 - System prompt with memory context (including learned skills)
 - User message
-- `layer1_tools` schema (18 tools: `start_react_system`, `propose_plan`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs`)
+- `layer1_tools` schema (20 tools: `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs`)
 
 **Outcomes** (determined by `consume_silently()` in `ws.rs`):
 
@@ -131,7 +131,7 @@ Layer 1 and Layer 2 use different tool sets, defined in `src/tools/schema.rs`:
 
 | Function | Tools Included |
 |----------|---------------|
-| `layer1_tools()` | `start_react_system`, `propose_plan`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs` (18 tools) |
-| `layer2_tools()` | `reply_request`, `refuse_request`, `extend_turns`, `run_bash_command`, `web_search`, `memory`, `scratchpad`, `synaptic`, `timeline`, `lessons`, `self_skills`, `learning`, `steering`, `interpretability`, `codebase_search`, `file_read`, `file_write`, `browser`, `create_artifact`, `generate_image`, `spawn_sub_agent`, `codebase_edit`, `system_recompile`, `checkpoint`, `system_logs` (25 tools) |
+| `layer1_tools()` | `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs` (20 tools) |
+| `layer2_tools()` | `reply_request`, `refuse_request`, `extend_turns`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `memory`, `scratchpad`, `synaptic`, `timeline`, `lessons`, `self_skills`, `learning`, `steering`, `interpretability`, `codebase_search`, `file_read`, `file_write`, `browser`, `create_artifact`, `generate_image`, `spawn_sub_agent`, `codebase_edit`, `system_recompile`, `checkpoint`, `system_logs` (27 tools) |
 
-Tool calls from the model are dispatched by `tool_dispatch.rs` (for state-dependent tools) or `executor.rs` (for stateless tools like shell commands).
+Tool calls from the model are dispatched by `tool_dispatch.rs` and `dispatch_planning.rs` (for state-dependent tools) or `executor.rs` (for stateless tools like shell commands).

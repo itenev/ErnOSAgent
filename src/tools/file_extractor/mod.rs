@@ -10,7 +10,7 @@ mod archives;
 mod communication;
 mod text;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 

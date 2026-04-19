@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::snapshot::{self, Checkpoint};
+use super::snapshot;
 
 /// Result of a checkpoint restore operation.
 #[derive(Debug, Clone)]

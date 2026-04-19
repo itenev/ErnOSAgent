@@ -1,6 +1,6 @@
 //! DAG executor — runs ready tasks via sub-agents, tracks progress.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crate::inference::sub_agent::{SubAgentConfig, SubAgentResult, run_sub_agent};
 use crate::provider::Provider;
 use crate::web::state::AppState;
