@@ -38,7 +38,21 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Flux server returned {}: {}", status, body);
+        // Try to parse structured error from the server
+        let error_msg = if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
+            let err = err_json["error"].as_str().unwrap_or("unknown");
+            let tb = err_json["traceback"].as_str().unwrap_or("");
+            if tb.is_empty() {
+                format!("Flux error: {}", err)
+            } else {
+                // Give the agent the last 3 lines of the traceback (the useful part)
+                let tb_tail: String = tb.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                format!("Flux error: {}\n{}", err, tb_tail)
+            }
+        } else {
+            format!("Flux server returned {}: {}", status, body)
+        };
+        anyhow::bail!("{}", error_msg);
     }
 
     let result: serde_json::Value = resp.json().await
