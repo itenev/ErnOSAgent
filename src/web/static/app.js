@@ -2680,6 +2680,7 @@ const ErnOS = (() => {
         initKeyboard();
         initContextMenu();
         initScrollFab();
+        initMobileDetection();
         // Init mermaid with dark theme
         if (typeof mermaid !== 'undefined') {
             mermaid.initialize({ startOnLoad: false, theme: 'dark' });
@@ -2690,6 +2691,69 @@ const ErnOS = (() => {
         await checkOnboarding();
         // Load version badge in sidebar
         loadVersionBadge();
+    }
+
+    // ─── Mobile / Android Detection ───
+    function initMobileDetection() {
+        const ua = navigator.userAgent || '';
+        const isAndroidWebView = ua.includes('wv') && ua.includes('Android');
+        const isNarrow = window.innerWidth <= 480;
+        const isMobile = isAndroidWebView || isNarrow;
+
+        if (isMobile) {
+            document.body.classList.add('is-mobile');
+        }
+
+        // Listen for resize (e.g. rotating device)
+        window.addEventListener('resize', () => {
+            if (window.innerWidth <= 480) {
+                document.body.classList.add('is-mobile');
+            } else if (!isAndroidWebView) {
+                document.body.classList.remove('is-mobile');
+            }
+        });
+
+        // Show/hide platform-specific cards
+        const computeCard = document.getElementById('compute-mode-card');
+        const companionCard = document.getElementById('mobile-companion-card');
+        if (isMobile) {
+            if (computeCard) computeCard.style.display = '';
+            if (companionCard) companionCard.style.display = 'none';
+        } else {
+            if (computeCard) computeCard.style.display = 'none';
+            if (companionCard) companionCard.style.display = '';
+            loadHostAddress();
+        }
+    }
+
+    // ─── Compute Mode (Mobile) ───
+    function setComputeMode(mode) {
+        document.querySelectorAll('.compute-mode-card').forEach(c => {
+            c.classList.toggle('active', c.dataset.mode === mode);
+        });
+        localStorage.setItem('ernos-compute-mode', mode);
+        showToast(`Compute mode: ${mode}`, 'success');
+        // In Android WebView, this would be picked up by EngineService via SharedPreferences bridge
+        if (window.Android && window.Android.setComputeMode) {
+            window.Android.setComputeMode(mode);
+        }
+    }
+
+    // ─── Host Address (Desktop Companion Card) ───
+    async function loadHostAddress() {
+        const el = document.getElementById('host-address');
+        if (!el) return;
+        try {
+            const res = await fetch('/api/health');
+            if (res.ok) {
+                // Use the current page hostname (works on LAN)
+                const host = window.location.hostname;
+                const port = window.location.port || '3000';
+                el.textContent = `${host}:${port}`;
+            }
+        } catch {
+            el.textContent = 'Unable to detect';
+        }
     }
 
     // ─── Onboarding ───
@@ -3306,6 +3370,8 @@ const ErnOS = (() => {
         checkForUpdates, updateNow, toggleVersionHistory, revertToVersion,
         // Autonomy & Snapshots
         setAutonomy, createSnapshot, restoreSnapshot, deleteSnapshot,
+        // Mobile
+        setComputeMode,
     };
 })();
 

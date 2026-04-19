@@ -2121,3 +2121,159 @@ pre[data-lang] { position: relative; padding-top: 28px; }
 @media (max-width: 700px) {
     .autonomy-selector { grid-template-columns: 1fr; }
 }
+
+/* ──────────────────────────────────────────────────────────
+   Mobile / Android WebView
+   ────────────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+    /* Safe area for notch/punch-hole displays */
+    body {
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left: env(safe-area-inset-left);
+        padding-right: env(safe-area-inset-right);
+    }
+
+    /* Sidebar → full-width overlay */
+    .sidebar {
+        position: fixed;
+        left: -100%;
+        width: 100%;
+        z-index: 100;
+        transition: left 0.3s ease;
+    }
+    .sidebar.mobile-open {
+        left: 0;
+    }
+
+    /* Main area fills screen */
+    .main-content {
+        margin-left: 0 !important;
+        width: 100% !important;
+    }
+
+    /* Nav tabs → horizontal scroll */
+    .nav-tabs {
+        display: flex;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        gap: 0;
+        padding: 0 8px;
+    }
+    .nav-tabs::-webkit-scrollbar { display: none; }
+    .nav-tab {
+        flex-shrink: 0;
+        min-height: 44px; /* touch target */
+        font-size: 0.8rem;
+        padding: 8px 12px;
+    }
+
+    /* Chat input → bottom-docked */
+    .input-area {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 50;
+        padding: 8px;
+        padding-bottom: calc(8px + env(safe-area-inset-bottom));
+        background: var(--bg-primary);
+        border-top: 1px solid var(--border);
+    }
+    .input-area textarea {
+        min-height: 44px;
+        font-size: 16px; /* prevents iOS auto-zoom */
+    }
+
+    /* Chat messages → more padding for bottom input */
+    .chat-container {
+        padding-bottom: 80px;
+    }
+
+    /* Settings cards → full width */
+    .settings-card {
+        margin: 8px 0;
+    }
+
+    /* Touch targets */
+    button, .btn, select, input {
+        min-height: 44px;
+        font-size: 14px;
+    }
+
+    /* Hide desktop-only navs on mobile */
+    .nav-tab[data-view="codes"] {
+        display: none;
+    }
+}
+
+/* Feature awareness banner for mobile */
+.mobile-feature-banner {
+    background: linear-gradient(135deg, rgba(0,255,136,0.06), rgba(59,130,246,0.06));
+    border: 1px solid rgba(0,255,136,0.15);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    display: none; /* shown via JS on mobile */
+}
+.mobile-feature-banner .banner-title {
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 4px;
+    font-size: 0.9rem;
+}
+.mobile-feature-banner .banner-items {
+    opacity: 0.8;
+    line-height: 1.5;
+}
+body.is-mobile .mobile-feature-banner {
+    display: block;
+}
+
+/* Compute mode selector card */
+.compute-mode-selector {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+}
+.compute-mode-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s ease;
+}
+.compute-mode-card:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+.compute-mode-card.active {
+    border-color: var(--accent);
+    background: rgba(0,255,136,0.08);
+    box-shadow: 0 0 12px rgba(0,255,136,0.1);
+}
+.compute-mode-card .mode-icon {
+    font-size: 1.5rem;
+    margin-bottom: 6px;
+}
+.compute-mode-card .mode-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+.compute-mode-card .mode-desc {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+@media (max-width: 480px) {
+    .compute-mode-selector {
+        grid-template-columns: 1fr;
+    }
+}

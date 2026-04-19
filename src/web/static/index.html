@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="description" content="Ern-OS — High-performance, model-neutral AI agent engine">
     <title>Ern-OS</title>
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -412,6 +415,53 @@
                         </div>
                         <div id="snapshots-container" style="margin-top:6px">
                             <p class="empty-state" style="font-size:11px;padding:8px 0;margin:0">Loading snapshots...</p>
+                        </div>
+                    <!-- Compute Mode (shown on mobile) -->
+                    <div class="settings-card" id="compute-mode-card" style="display:none">
+                        <div class="card-title"><span class="title-icon">📡</span> Compute Mode</div>
+                        <div class="compute-mode-selector">
+                            <div class="compute-mode-card active" data-mode="local" onclick="ErnOS.setComputeMode('local')">
+                                <div class="mode-icon">🔒</div>
+                                <div class="mode-name">Local</div>
+                                <div class="mode-desc">All on-device. Fully offline.</div>
+                            </div>
+                            <div class="compute-mode-card" data-mode="hybrid" onclick="ErnOS.setComputeMode('hybrid')">
+                                <div class="mode-icon">🔀</div>
+                                <div class="mode-name">Hybrid</div>
+                                <div class="mode-desc">Light tasks local, heavy → host.</div>
+                            </div>
+                            <div class="compute-mode-card" data-mode="host" onclick="ErnOS.setComputeMode('host')">
+                                <div class="mode-icon">📡</div>
+                                <div class="mode-name">Host</div>
+                                <div class="mode-desc">All inference on host machine.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mobile Feature Awareness -->
+                    <div class="mobile-feature-banner">
+                        <div class="banner-title">📱 Mobile Mode</div>
+                        <div class="banner-items">
+                            Some tools are desktop-only: Browser QA, Image Gen, Code Server, System Recompile.<br>
+                            Run in <strong>Host mode</strong> to access all features via your desktop.
+                        </div>
+                    </div>
+
+                    <!-- Mobile Companion (shown on desktop) -->
+                    <div class="settings-card" id="mobile-companion-card">
+                        <div class="card-title"><span class="title-icon">📱</span> Mobile Companion</div>
+                        <div class="setting-row">
+                            <div class="setting-label">
+                                <div>Your phone can connect to this instance for Hybrid/Host compute.</div>
+                                <div style="margin-top:8px;font-size:0.85em;color:var(--text-tertiary)">
+                                    <strong>Desktop-only features</strong> (not available on mobile):<br>
+                                    🌐 Browser QA · 🎨 Image Gen · 🗣️ TTS · 💻 Code Server · 🔄 Recompile
+                                </div>
+                            </div>
+                        </div>
+                        <div class="setting-row" style="margin-top:8px">
+                            <div class="setting-label">Host Address</div>
+                            <code id="host-address" style="color:var(--accent);font-size:0.9em">Loading...</code>
                         </div>
                     </div>
                 </div>
