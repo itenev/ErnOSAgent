@@ -314,9 +314,13 @@ async fn maybe_start_flux(config: &ern_os::config::AppConfig) {
 
     tracing::info!(script = %script_path.display(), port, "Starting Flux image server");
 
-    let python = find_flux_python();
-    match tokio::process::Command::new(&python)
-        .arg(&script_path)
+    // Prefer `uv run` which manages its own venv with correct torch/diffusers deps.
+    // Falling back to raw python binary risks using system Python without deps.
+    let (cmd_bin, cmd_args) = find_flux_launch_command(&script_path);
+    tracing::info!(cmd = %cmd_bin, "Flux launch command");
+
+    match tokio::process::Command::new(&cmd_bin)
+        .args(&cmd_args)
         .env("FLUX_PORT", port.to_string())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -324,7 +328,7 @@ async fn maybe_start_flux(config: &ern_os::config::AppConfig) {
     {
         Ok(mut child) => {
             let pid = child.id().unwrap_or(0);
-            tracing::info!(pid, python = %python, "Flux image server spawned — waiting for health check");
+            tracing::info!(pid, cmd = %cmd_bin, "Flux image server spawned — waiting for health check");
 
             // Wait up to 60s for the server to become healthy (model loading takes time)
             let mut ready = false;
@@ -360,7 +364,7 @@ async fn maybe_start_flux(config: &ern_os::config::AppConfig) {
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, python = %python, "Failed to start Flux — image generation disabled");
+            tracing::warn!(error = %e, cmd = %cmd_bin, "Failed to start Flux — image generation disabled");
         }
     }
 }
@@ -375,8 +379,34 @@ fn find_flux_script() -> Option<std::path::PathBuf> {
     candidates.into_iter().flatten().find(|p| p.exists())
 }
 
-/// Find Python binary with Flux/torch dependencies — checks dedicated Flux venv first,
-/// then falls back to generic python.
+/// Determine how to launch the Flux server script.
+/// Prefers `uv run` (manages its own venv with correct deps) over raw python.
+fn find_flux_launch_command(script: &std::path::Path) -> (String, Vec<String>) {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // 1. Try `uv` — it reads the script's inline metadata and creates a venv with correct deps
+    let uv_candidates = [
+        format!("{home}/.local/bin/uv"),
+        format!("{home}/.cargo/bin/uv"),
+        "/opt/homebrew/bin/uv".to_string(),
+        "uv".to_string(),
+    ];
+    for uv in &uv_candidates {
+        if std::path::Path::new(uv).exists() || uv == "uv" {
+            // Check if uv is actually available
+            if std::process::Command::new(uv).arg("--version").output().is_ok() {
+                return (uv.clone(), vec!["run".to_string(), script.display().to_string()]);
+            }
+        }
+    }
+
+    // 2. Fallback to python binary (may not have correct deps)
+    let python = find_flux_python();
+    tracing::warn!(python = %python, "uv not found — falling back to raw python (may lack deps)");
+    (python, vec![script.display().to_string()])
+}
+
+/// Find Python binary — fallback only, prefer uv run.
 fn find_flux_python() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
