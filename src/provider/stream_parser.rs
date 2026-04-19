@@ -81,6 +81,7 @@ pub async fn parse_sse_stream(
 
     let mut stream = response.bytes_stream();
     let mut chunk_count: u64 = 0;
+    let mut has_content = false; // track if any real content was generated
     let start = std::time::Instant::now();
 
     while let Some(chunk_result) = stream.next().await {
@@ -111,9 +112,18 @@ pub async fn parse_sse_stream(
                 }
                 emit_accumulated_tools(&tool_calls, &tx).await;
                 let _ = tx.send(StreamEvent::Done).await;
+                if !has_content && tool_calls.is_empty() {
+                    tracing::warn!(
+                        chunks = chunk_count,
+                        content_buffer_len = content_buffer.len(),
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "SSE stream: [DONE] with NO content and NO tool calls — model produced nothing (premature EOS)"
+                    );
+                }
                 tracing::debug!(
                     chunks = chunk_count,
                     tool_calls = tool_calls.len(),
+                    has_content,
                     elapsed_ms = start.elapsed().as_millis() as u64,
                     "SSE stream: [DONE] received"
                 );
@@ -122,7 +132,7 @@ pub async fn parse_sse_stream(
 
             if let Some(json_str) = line.strip_prefix("data: ") {
                 if let Ok(chunk) = serde_json::from_str::<SseChunk>(json_str) {
-                    process_chunk(
+                    let produced = process_chunk(
                         &chunk,
                         &mut tool_calls,
                         &mut thinking_state,
@@ -130,6 +140,9 @@ pub async fn parse_sse_stream(
                         &tx,
                     )
                     .await;
+                    if produced {
+                        has_content = true;
+                    }
                 }
             }
         }
@@ -152,26 +165,31 @@ pub async fn parse_sse_stream(
 }
 
 /// Process a single SSE chunk.
+/// Returns `true` if the chunk contained any content or tool call data.
 async fn process_chunk(
     chunk: &SseChunk,
     tool_calls: &mut Vec<ToolCallAccumulator>,
     thinking_state: &mut ThinkingState,
     content_buffer: &mut String,
     tx: &mpsc::Sender<StreamEvent>,
-) {
+) -> bool {
     let choices = match &chunk.choices {
         Some(c) => c,
-        None => return,
+        None => return false,
     };
+
+    let mut produced = false;
 
     for choice in choices {
         let delta = match &choice.delta {
             Some(d) => d,
             None => {
-                // No delta — check if this is a finish-only chunk
+                // No delta — this is a finish-only chunk
                 if let Some(reason) = &choice.finish_reason {
-                    if reason == "length" {
-                        tracing::warn!("Response truncated — model hit max_tokens");
+                    match reason.as_str() {
+                        "length" => tracing::warn!("SSE: finish_reason=length — model hit max_tokens"),
+                        "stop" => tracing::debug!("SSE: finish_reason=stop"),
+                        other => tracing::info!(finish_reason = other, "SSE: finish_reason received"),
                     }
                 }
                 continue;
@@ -181,12 +199,16 @@ async fn process_chunk(
         // Direct reasoning_content field (some providers)
         if let Some(reasoning) = &delta.reasoning_content {
             if !reasoning.is_empty() {
+                produced = true;
                 let _ = tx.send(StreamEvent::ThinkingDelta(reasoning.clone())).await;
             }
         }
 
         // Content with thinking block extraction
         if let Some(content) = &delta.content {
+            if !content.is_empty() {
+                produced = true;
+            }
             process_content_delta(
                 content,
                 thinking_state,
@@ -198,6 +220,7 @@ async fn process_chunk(
 
         // Tool call delta accumulation
         if let Some(tc_deltas) = &delta.tool_calls {
+            produced = true;
             for tc_delta in tc_deltas {
                 accumulate_tool_call(tool_calls, tc_delta);
             }
@@ -205,11 +228,14 @@ async fn process_chunk(
 
         // Check finish_reason for truncation detection
         if let Some(reason) = &choice.finish_reason {
-            if reason == "length" {
-                tracing::warn!("Response truncated — model hit max_tokens (finish_reason=length)");
+            match reason.as_str() {
+                "length" => tracing::warn!("SSE: finish_reason=length — response truncated"),
+                "stop" if !produced => tracing::warn!("SSE: finish_reason=stop with NO content produced — premature EOS"),
+                _ => {}
             }
         }
     }
+    produced
 }
 
 /// Process content delta with thinking block extraction.
