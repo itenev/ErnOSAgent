@@ -130,13 +130,22 @@ pub async fn interp_snapshots() -> impl IntoResponse {
     Json(serde_json::json!({ "count": snapshots.len(), "snapshots": snapshots }))
 }
 
-pub async fn interp_sae() -> impl IntoResponse {
+pub async fn interp_sae(State(state): State<AppState>) -> impl IntoResponse {
+    let sae = state.sae.read().await;
+    let (input_dim, hidden_dim, model_loaded) = match sae.as_ref() {
+        Some(s) => (s.model_dim, s.num_features, true),
+        None => {
+            let c = crate::interpretability::trainer::TrainConfig::default();
+            (c.model_dim, c.num_features, false)
+        }
+    };
     let config = crate::interpretability::trainer::TrainConfig::default();
     Json(serde_json::json!({
-        "num_features": config.num_features, "model_dim": config.model_dim,
-        "l1_coefficient": config.l1_coefficient, "architecture": "JumpReLU",
-        "model_loaded": std::path::Path::new("data/sae_weights.safetensors").exists()
-            || std::path::Path::new("data/sae_training/gemma4_sae_131k.safetensors").exists(),
+        "input_dim": input_dim,
+        "hidden_dim": hidden_dim,
+        "sparsity_coefficient": config.l1_coefficient,
+        "architecture": "JumpReLU",
+        "model_loaded": model_loaded,
         "feature_count": crate::interpretability::features::labeled_features().len(),
     }))
 }
