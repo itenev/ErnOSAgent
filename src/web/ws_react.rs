@@ -79,6 +79,13 @@ pub async fn run_react_loop(
 
         match react_loop::run_iteration(provider, &ctx, true).await {
             Ok(IterationResult::Reply(reply, thinking)) => {
+                tracing::info!(
+                    iteration = total_iterations,
+                    reply_len = reply.len(),
+                    thinking_len = thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+                    reply_preview = %reply.chars().take(200).collect::<String>(),
+                    "ReAct: Reply (via reply_request)"
+                );
                 if let Some(ref t) = thinking {
                     send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
                 }
@@ -125,6 +132,7 @@ pub async fn run_react_loop(
                 return;
             }
             Ok(IterationResult::Refuse(reason)) => {
+                tracing::info!(iteration = total_iterations, reason = %reason, "ReAct: Refuse");
                 send_ws(sender, "text_delta", &serde_json::json!({"content": format!("I cannot complete this: {}", reason)})).await;
                 send_ws(sender, "done", &serde_json::json!({})).await;
                 return;
@@ -150,6 +158,7 @@ pub async fn run_react_loop(
                 ));
             }
             Ok(IterationResult::ToolCall(tc)) => {
+                tracing::info!(iteration = total_iterations, tool = %tc.name, remaining = remaining_turns, "ReAct: ToolCall");
                 if remaining_turns == 0 {
                     tracing::warn!(tool = %tc.name, "Model tried to call tool with 0 budget — rejecting");
                     ctx.messages.push(Message::assistant_tool_call(&tc.id, &tc.name, &tc.arguments));
@@ -206,6 +215,13 @@ pub async fn run_react_loop(
                 total_iterations += 1;
             }
             Ok(IterationResult::ToolCalls(tcs)) => {
+                tracing::info!(
+                    iteration = total_iterations,
+                    count = tcs.len(),
+                    remaining = remaining_turns,
+                    tools = %tcs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+                    "ReAct: ToolCalls (parallel)"
+                );
                 if remaining_turns == 0 {
                     tracing::warn!(count = tcs.len(), "Model tried parallel calls with 0 budget — rejecting all");
                     let call_refs: Vec<_> = tcs.iter()
@@ -251,6 +267,17 @@ pub async fn run_react_loop(
                 total_iterations += 1;
             }
             Ok(IterationResult::ImplicitReply(text, thinking)) => {
+                tracing::info!(
+                    iteration = total_iterations,
+                    text_len = text.len(),
+                    text_empty = text.trim().is_empty(),
+                    thinking_len = thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+                    text_preview = %text.chars().take(200).collect::<String>(),
+                    "ReAct: ImplicitReply (no tool calls — model returned raw text)"
+                );
+                if text.trim().is_empty() {
+                    tracing::warn!(iteration = total_iterations, "ReAct: ImplicitReply text is EMPTY — model produced no output");
+                }
                 if let Some(ref t) = thinking {
                     send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
                 }
