@@ -41,6 +41,9 @@ pub enum JobTask {
     LogRotate,
     /// User-defined shell command — unrestricted per No-Limits governance.
     Custom(String),
+    /// Natural-language prompt sent through the L1 inference pipeline.
+    /// The agent can use any tools available to fulfill the instruction.
+    Prompt(String),
 }
 
 impl std::fmt::Display for JobTask {
@@ -51,6 +54,7 @@ impl std::fmt::Display for JobTask {
             Self::SynapticPrune => write!(f, "synaptic_prune"),
             Self::LogRotate => write!(f, "log_rotate"),
             Self::Custom(cmd) => write!(f, "custom: {}", cmd),
+            Self::Prompt(prompt) => write!(f, "prompt: {}", &prompt[..prompt.len().min(60)]),
         }
     }
 }

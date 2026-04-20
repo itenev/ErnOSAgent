@@ -115,3 +115,42 @@ pub async fn delete_team(
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
+
+/// Return recent agent activity feed (tool usage, status changes).
+pub async fn activity_feed(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.config.general.data_dir.join("agent_activity.json");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => {
+            ([(axum::http::header::CONTENT_TYPE, "application/json")], content).into_response()
+        }
+        Err(_) => Json(serde_json::json!({
+            "entries": [],
+            "active_agents": 0,
+        })).into_response(),
+    }
+}
+
+/// Send a prompt direction to a running agent mid-task.
+pub async fn send_direction(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let direction = body["direction"].as_str().unwrap_or("").to_string();
+    if direction.is_empty() {
+        return Json(serde_json::json!({"error": "direction is required"}));
+    }
+
+    // Write direction to a file the running agent polls
+    let dir_path = state.config.general.data_dir.join("agent_directions");
+    let _ = tokio::fs::create_dir_all(&dir_path).await;
+    let file = dir_path.join(format!("{}.json", id));
+    let payload = serde_json::json!({
+        "agent_id": id,
+        "direction": direction,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    let _ = tokio::fs::write(&file, serde_json::to_string(&payload).unwrap()).await;
+    tracing::info!(agent = %id, direction_len = direction.len(), "Prompt direction sent to agent");
+    Json(serde_json::json!({"ok": true, "agent_id": id}))
+}

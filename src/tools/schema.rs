@@ -191,6 +191,8 @@ pub fn layer1_tools() -> serde_json::Value {
         interpretability_tool_schema(),
         learning_tool_schema(),
         system_logs_tool_schema(),
+        session_recall_tool_schema(),
+        introspect_tool_schema(),
     ])
 }
 
@@ -224,11 +226,14 @@ pub fn layer2_tools() -> serde_json::Value {
         system_recompile_tool_schema(),
         checkpoint_tool_schema(),
         system_logs_tool_schema(),
+        session_recall_tool_schema(),
+        introspect_tool_schema(),
     ])
 }
 
 // Tool schema definitions extracted to schema_definitions.rs for governance compliance.
 use crate::tools::schema_definitions::*;
+use crate::tools::schema_definitions_ext::*;
 
 #[cfg(test)]
 mod tests {
@@ -254,7 +259,7 @@ mod tests {
     fn test_layer1_tools() {
         let tools = layer1_tools();
         let arr = tools.as_array().unwrap();
-        assert_eq!(arr.len(), 20, "L1 should have 20 tools");
+        assert_eq!(arr.len(), 22, "L1 should have 22 tools");
         assert!(arr.iter().any(|t| t["function"]["name"] == "start_react_system"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "memory"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "scratchpad"));

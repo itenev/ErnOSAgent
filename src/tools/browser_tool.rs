@@ -27,6 +27,10 @@ impl BrowserState {
     pub fn with_config(config: BrowserConfig) -> Self {
         Self { browser: None, _handle: None, pages: HashMap::new(), next_page_id: 0, config }
     }
+    /// Get a page by ID, or the most recently opened page.
+    pub fn get_page_or_latest(&self, page_id: &str) -> Option<&Page> {
+        self.pages.get(page_id).or_else(|| self.pages.values().last())
+    }
 }
 
 /// Auto-detect Chrome/Chromium binary path.

@@ -214,16 +214,20 @@ fn build_observer_messages(
 }
 
 /// Format rejection feedback for injection into the agent's context.
-/// Uses "SELF-CHECK FAIL" framing so the model treats it as internal
-/// self-correction, not an external authority.
+/// Instructs the model to call tools first, not apologize or rewrite text.
 pub fn format_rejection_feedback(result: &AuditResult) -> String {
     format!(
-        "[SELF-CHECK FAIL: INVISIBLE TO USER] Your output did not meet your own standards.\n\
+        "[SELF-CHECK FAIL: INVISIBLE TO USER] Your response was BLOCKED.\n\
          Category: {}\n\
          Why it failed: {}\n\
          How to fix it: {}\n\
          \n\
-         You MUST rewrite your response immediately incorporating this feedback.",
+         MANDATORY PROTOCOL:\n\
+         1. DO NOT apologize.\n\
+         2. DO NOT rewrite text. Your previous text was discarded.\n\
+         3. If the fix requires data you do not have, call the required tools NOW.\n\
+         4. DO NOT reply to the user until you have called all necessary tools and received their results.\n\
+         5. Build your response ONLY from verified tool outputs.",
         result.failure_category,
         result.what_went_wrong,
         result.how_to_fix,
@@ -358,7 +362,8 @@ mod tests {
         assert!(feedback.contains("ghost_tooling"));
         assert!(feedback.contains("Claimed search without evidence"));
         assert!(feedback.contains("Execute web_search first"));
-        assert!(feedback.contains("MUST rewrite"));
+        assert!(feedback.contains("DO NOT apologize"));
+        assert!(feedback.contains("call the required tools NOW"));
     }
 
     #[test]

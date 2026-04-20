@@ -10,5 +10,6 @@ pub mod ws_plans;
 pub mod state;
 pub mod tool_dispatch;
 pub mod dispatch_planning;
+pub mod dispatch_memory;
 pub mod training_capture;
 pub mod handlers;

@@ -4,7 +4,7 @@
 //! Axum web server — thin router orchestrator. Handlers live in `handlers/`.
 
 use crate::web::state::AppState;
-use crate::web::handlers::{system, sessions, memory, scheduler, onboarding, api_keys, agents, content, tts, codes, platforms, voice, video, upload, version, checkpoint};
+use crate::web::handlers::{system, sessions, memory, scheduler, onboarding, api_keys, agents, content, tts, codes, platforms, voice, video, upload, version, checkpoint, planning, models_hub};
 use anyhow::Result;
 use axum::{Router, routing::{get, post, put, delete}};
 use tower_http::cors::CorsLayer;
@@ -107,6 +107,8 @@ pub async fn run(state: AppState, addr: &str) -> Result<()> {
         // REST API — API Keys
         .route("/api/api-keys", get(api_keys::get_keys))
         .route("/api/api-keys", put(api_keys::save_keys))
+        // REST API — Settings
+        .route("/api/settings/model", put(system::swap_model))
         // REST API — File Upload
         .route("/api/upload", post(upload::upload_file))
         // REST API — Version Management
@@ -120,6 +122,17 @@ pub async fn run(state: AppState, addr: &str) -> Result<()> {
         .route("/api/state-checkpoint", post(checkpoint::create_checkpoint))
         .route("/api/state-checkpoint/restore", post(checkpoint::restore_checkpoint))
         .route("/api/state-checkpoint/{id}", delete(checkpoint::delete_checkpoint))
+        // REST API — Planning & Task DAG
+        .route("/api/planning/status", get(planning::dag_status))
+        .route("/api/planning/decompose", post(planning::decompose))
+        // REST API — Agent Activity
+        .route("/api/agents/activity", get(agents::activity_feed))
+        .route("/api/agents/{id}/direct", post(agents::send_direction))
+        // REST API — Skills
+        .route("/api/skills", get(system::list_skills))
+        // REST API — HuggingFace Model Hub
+        .route("/api/models/search", get(models_hub::search_hf))
+        .route("/api/models/download", post(models_hub::start_download))
         // WebSocket
         .route("/ws", get(crate::web::ws::ws_handler))
         .route("/ws/voice", get(voice::ws_voice_handler))

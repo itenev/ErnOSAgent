@@ -16,3 +16,5 @@ pub mod video;
 pub mod upload;
 pub mod version;
 pub mod checkpoint;
+pub mod planning;
+pub mod models_hub;

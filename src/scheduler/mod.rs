@@ -73,6 +73,7 @@ async fn execute_task(task: &JobTask, state: &AppState) -> (bool, String) {
         JobTask::SynapticPrune => run_synaptic_prune(state).await,
         JobTask::LogRotate => run_log_rotate().await,
         JobTask::Custom(cmd) => run_custom_command(cmd).await,
+        JobTask::Prompt(prompt) => run_prompt_job(prompt, state).await,
     }
 }
 
@@ -156,6 +157,40 @@ async fn run_custom_command(cmd: &str) -> (bool, String) {
             (output.status.success(), result)
         }
         Err(e) => (false, format!("Exec failed: {}", e)),
+    }
+}
+
+/// Execute a prompt job — sends through the L1 inference pipeline.
+/// The agent has full tool access per No-Limits governance.
+async fn run_prompt_job(prompt: &str, state: &AppState) -> (bool, String) {
+    let messages = vec![
+        crate::provider::Message::text("user", prompt),
+    ];
+    let thinking = state.config.prompt.thinking_enabled;
+
+    match crate::inference::fast_reply::run(
+        state.provider.as_ref(),
+        &messages,
+        thinking,
+    ).await {
+        Ok((_initial, rx)) => {
+            match crate::inference::fast_reply::consume_stream(rx, None).await {
+                Ok(result) => {
+                    let text = match result {
+                        crate::inference::fast_reply::FastReplyResult::Reply { text, .. } => text,
+                        crate::inference::fast_reply::FastReplyResult::Escalate { objective, .. } => {
+                            format!("[Escalated] {}", objective)
+                        }
+                        crate::inference::fast_reply::FastReplyResult::ToolCall { name, arguments, .. } => {
+                            format!("[Tool: {}] {}", name, &arguments[..arguments.len().min(200)])
+                        }
+                    };
+                    (true, text)
+                }
+                Err(e) => (false, format!("Stream error: {}", e)),
+            }
+        }
+        Err(e) => (false, format!("Inference error: {}", e)),
     }
 }
 

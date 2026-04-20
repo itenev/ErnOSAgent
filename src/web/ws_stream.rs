@@ -31,9 +31,7 @@ pub async fn consume_silently(
     while let Some(event) = rx.recv().await {
         event_count += 1;
         match &event {
-            StreamEvent::TextDelta(delta) => {
-                text.push_str(delta);
-            }
+            StreamEvent::TextDelta(delta) => text.push_str(delta),
             StreamEvent::ThinkingDelta(delta) => {
                 thinking.push_str(delta);
                 send_ws(sender, "thinking_delta", &serde_json::json!({"content": delta})).await;
@@ -53,15 +51,15 @@ pub async fn consume_silently(
         }
     }
 
-    if event_count == 0 || (!text.is_empty() && tool_calls.is_empty()) {
-        tracing::debug!(
-            text_len = text.len(), thinking_len = thinking.len(),
-            tool_calls = tool_calls.len(), events = event_count,
-            "consume_silently: stream ended"
-        );
-    }
+    classify_stream_result(text, thinking, tool_calls)
+}
 
-    // Check for propose_plan first (user-approved planning takes priority)
+/// Classify a completed stream into the appropriate ConsumeResult.
+fn classify_stream_result(
+    text: String,
+    thinking: String,
+    tool_calls: Vec<(String, String, String)>,
+) -> ConsumeResult {
     if let Some((_, _, args)) = tool_calls.iter().find(|(_, name, _)| name == "propose_plan") {
         let parsed: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
         let turns = parsed["estimated_turns"].as_u64().unwrap_or(10) as usize;
@@ -110,7 +108,7 @@ pub async fn audit_and_retry(
     user_query: &str,
     initial_text: &str,
 ) -> String {
-    let max_retries = 2;  // Bailout after 2 consecutive rejections
+    let max_retries = 2;
     let mut current_text = initial_text.to_string();
 
     if !state.config.observer.enabled || current_text.is_empty() {
@@ -119,12 +117,12 @@ pub async fn audit_and_retry(
 
     for attempt in 0..=max_retries {
         send_ws(sender, "audit_running", &serde_json::json!({})).await;
+        let tool_ctx = build_l1_tool_context(messages);
 
-        match observer::audit_response(provider, messages, &current_text, &build_l1_tool_context(messages), user_query).await {
+        match observer::audit_response(provider, messages, &current_text, &tool_ctx, user_query).await {
             Ok(output) if output.result.verdict.is_allowed() => {
                 send_ws(sender, "audit_completed", &serde_json::json!({
-                    "approved": true,
-                    "confidence": output.result.confidence,
+                    "approved": true, "confidence": output.result.confidence,
                     "category": &output.result.failure_category,
                 })).await;
                 training_capture::capture_approved(state, user_query, &current_text, output.result.confidence);
@@ -132,55 +130,22 @@ pub async fn audit_and_retry(
             }
             Ok(output) => {
                 let rejected_text = current_text.clone();
-                let reject_reason = output.result.what_went_wrong.clone();
-                let category = output.result.failure_category.clone();
+                let reason = output.result.what_went_wrong.clone();
 
-                tracing::info!(
-                    attempt,
-                    category = %category,
-                    reason = %reject_reason,
-                    "Response rejected by observer — retrying"
-                );
-
+                tracing::info!(attempt, category = %output.result.failure_category, reason = %reason, "Response rejected — retrying");
                 send_ws(sender, "audit_completed", &serde_json::json!({
-                    "approved": false,
-                    "category": &category,
-                    "reason": &reject_reason,
+                    "approved": false, "category": &output.result.failure_category, "reason": &reason,
                 })).await;
 
-                // On last attempt, use bailout override instead of retrying
                 if attempt >= max_retries {
-                    tracing::warn!(
-                        rejections = attempt + 1,
-                        "Observer bailout — forcing response through"
-                    );
-                    let bailout = observer::format_bailout_override(attempt + 1);
-                    messages.push(Message::text("assistant", &rejected_text));
-                    messages.push(Message::text("system", &bailout));
-
-                    if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
-                        let result = consume_silently(rx, sender).await;
-                        if let ConsumeResult::Reply { text, thinking: _ } = result {
-                            current_text = text;
-                        }
-                    }
+                    current_text = handle_bailout(provider, sender, messages, tools, &rejected_text, attempt + 1).await;
                     break;
                 }
 
-                // Normal retry with SELF-CHECK feedback
-                let feedback = observer::format_rejection_feedback(&output.result);
-                messages.push(Message::text("assistant", &rejected_text));
-                messages.push(Message::text("system", &feedback));
-
-                if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
-                    let result = consume_silently(rx, sender).await;
-                    if let ConsumeResult::Reply { text, thinking: _ } = result {
-                        training_capture::capture_rejection(
-                            state, user_query, &rejected_text, &text, &reject_reason,
-                        );
-                        current_text = text;
-                    }
-                }
+                current_text = retry_with_feedback(
+                    state, provider, sender, messages, tools,
+                    user_query, &rejected_text, &reason, &output.result,
+                ).await;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Observer failed — fail-open");
@@ -190,6 +155,120 @@ pub async fn audit_and_retry(
     }
 
     current_text
+}
+
+/// Bailout after max rejections — force the response through with an override prompt.
+async fn handle_bailout(
+    provider: &dyn crate::provider::Provider,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    messages: &mut Vec<Message>,
+    tools: &serde_json::Value,
+    rejected_text: &str,
+    rejection_count: usize,
+) -> String {
+    tracing::warn!(rejections = rejection_count, "Observer bailout — forcing response through");
+    let bailout = observer::format_bailout_override(rejection_count);
+    messages.push(Message::text("assistant", rejected_text));
+    messages.push(Message::text("system", &bailout));
+
+    if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
+        if let ConsumeResult::Reply { text, .. } = consume_silently(rx, sender).await {
+            return text;
+        }
+    }
+    rejected_text.to_string()
+}
+
+/// Retry inference with structured rejection feedback and execute any tool calls.
+async fn retry_with_feedback(
+    state: &AppState,
+    provider: &dyn crate::provider::Provider,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    messages: &mut Vec<Message>,
+    tools: &serde_json::Value,
+    user_query: &str,
+    rejected_text: &str,
+    reject_reason: &str,
+    result: &observer::AuditResult,
+) -> String {
+    let feedback = observer::format_rejection_feedback(result);
+    messages.push(Message::text("assistant", rejected_text));
+    messages.push(Message::text("system", &feedback));
+
+    let rx = match provider.chat(messages, Some(tools), true).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            tracing::error!(error = %e, "Observer retry: inference error");
+            return rejected_text.to_string();
+        }
+    };
+
+    match consume_silently(rx, sender).await {
+        ConsumeResult::Reply { text, .. } => {
+            training_capture::capture_rejection(state, user_query, rejected_text, &text, reject_reason);
+            text
+        }
+        ConsumeResult::ToolCall { id, name, arguments } => {
+            let tc = crate::tools::schema::ToolCall { id, name, arguments };
+            execute_retry_tool_chain(state, provider, sender, messages, tools, tc).await
+        }
+        ConsumeResult::Error(e) => {
+            tracing::error!(error = %e, "Observer retry: inference error");
+            rejected_text.to_string()
+        }
+        _ => {
+            tracing::warn!("Observer retry: unexpected result type — continuing");
+            rejected_text.to_string()
+        }
+    }
+}
+
+/// Execute a chain of tool calls during observer retry (up to 10 iterations).
+async fn execute_retry_tool_chain(
+    state: &AppState,
+    provider: &dyn crate::provider::Provider,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    messages: &mut Vec<Message>,
+    tools: &serde_json::Value,
+    mut tc: crate::tools::schema::ToolCall,
+) -> String {
+    let max_chain = 10;
+
+    for iteration in 0..max_chain {
+        tracing::info!(tool = %tc.name, iteration, "Observer retry: executing tool");
+        send_ws(sender, "tool_executing", &serde_json::json!({"name": &tc.name, "id": &tc.id})).await;
+
+        let result = crate::web::tool_dispatch::execute_tool_with_state(state, &tc).await;
+        send_ws(sender, "tool_completed", &serde_json::json!({
+            "id": &tc.id, "name": &tc.name, "result": &result.output, "success": result.success,
+        })).await;
+
+        messages.push(Message::assistant_tool_call(&tc.id, &tc.name, &tc.arguments));
+        messages.push(Message::tool_result(&tc.id, &result.output));
+
+        let rx = match provider.chat(messages, Some(tools), true).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                tracing::error!(error = %e, "Observer retry: re-inference failed");
+                return String::new();
+            }
+        };
+
+        match consume_silently(rx, sender).await {
+            ConsumeResult::Reply { text, .. } => return text,
+            ConsumeResult::ToolCall { id, name, arguments } => {
+                tracing::info!(tool = %name, iteration = iteration + 1, "Observer retry: chaining tool");
+                tc = crate::tools::schema::ToolCall { id, name, arguments };
+            }
+            ConsumeResult::Error(e) => {
+                tracing::error!(error = %e, "Observer retry: tool chain error");
+                return String::new();
+            }
+            _ => break,
+        }
+    }
+
+    String::new()
 }
 
 /// Send a typed JSON message to the WebSocket client.

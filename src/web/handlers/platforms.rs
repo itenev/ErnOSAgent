@@ -143,9 +143,19 @@ pub async fn update_platform_config(
         }
     }
 
+    // Drop the config lock before acquiring the platforms lock
+    drop(config);
+
+    // Auto-connect/disconnect platforms based on new config
+    let platforms = state.platforms.clone();
+    tokio::spawn(async move {
+        let mut reg = platforms.write().await;
+        reg.connect_all().await;
+    });
+
     Json(serde_json::json!({
         "success": true,
-        "message": "Platform config updated",
+        "message": "Platform config updated and adapters reconnecting",
     }))
 }
 

@@ -30,4 +30,7 @@ pub mod checkpoint;
 pub mod codebase_edit;
 pub mod compiler;
 pub mod schema_definitions;
+pub mod schema_definitions_ext;
 pub mod system_logs;
+pub mod session_recall_tool;
+pub mod introspect_tool;

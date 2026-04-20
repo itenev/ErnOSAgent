@@ -78,6 +78,10 @@ fn parse_task(body: &serde_json::Value) -> crate::scheduler::job::JobTask {
         Some("lesson_decay") => JobTask::LessonDecay,
         Some("synaptic_prune") => JobTask::SynapticPrune,
         Some("log_rotate") => JobTask::LogRotate,
+        Some("prompt") => {
+            let prompt = body["prompt"].as_str().unwrap_or("").to_string();
+            JobTask::Prompt(prompt)
+        }
         Some("custom") => {
             let cmd = body["custom_command"].as_str().unwrap_or("echo ok").to_string();
             JobTask::Custom(cmd)

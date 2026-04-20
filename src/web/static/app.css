@@ -2276,3 +2276,140 @@ body.is-mobile .mobile-feature-banner {
         grid-template-columns: 1fr;
     }
 }
+
+/* ─── Agent Activity Feed ─── */
+.live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #ef4444;
+    animation: livePulse 1.5s infinite;
+}
+.live-dot.active { background: var(--accent); }
+@keyframes livePulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+}
+.activity-entry {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px; animation: fadeSlideIn 0.3s ease-out;
+}
+.activity-entry:last-child { border-bottom: none; }
+.activity-badge {
+    width: 20px; height: 20px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; flex-shrink: 0; margin-top: 2px;
+}
+.activity-badge.running { background: rgba(59,130,246,0.15); color: #60a5fa; }
+.activity-badge.done { background: rgba(16,185,129,0.15); color: var(--accent); }
+.activity-badge.failed { background: rgba(239,68,68,0.15); color: #f87171; }
+.activity-badge.pending { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.activity-agent { font-weight: 600; color: var(--text-primary); }
+.activity-action { color: var(--text-secondary); }
+.activity-detail {
+    color: var(--text-muted); font-size: 11px;
+    font-family: 'JetBrains Mono', monospace; margin-top: 2px;
+}
+.activity-time {
+    color: var(--text-muted); font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    margin-left: auto; flex-shrink: 0;
+}
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── DAG Task List ─── */
+.dag-task {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 4px; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px;
+}
+.dag-task:last-child { border-bottom: none; }
+.dag-task-icon { font-size: 14px; flex-shrink: 0; }
+.dag-task-title { flex: 1; font-weight: 500; color: var(--text-primary); }
+.dag-task-time { color: var(--text-muted); font-size: 10px; }
+.dag-task.completed .dag-task-title { color: var(--text-muted); text-decoration: line-through; }
+.dag-task-dep {
+    font-size: 10px; color: var(--text-muted); margin-left: 24px;
+    padding: 2px 0; font-style: italic;
+}
+
+/* ─── HuggingFace Model Cards ─── */
+.hf-model-card {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-radius: 8px;
+    background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
+    margin-bottom: 8px; transition: border-color 0.2s;
+}
+.hf-model-card:hover { border-color: var(--border); }
+.hf-model-info { flex: 1; min-width: 0; }
+.hf-model-name {
+    font-weight: 600; color: var(--text-primary); font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hf-model-meta {
+    font-size: 10px; color: var(--text-muted); margin-top: 2px;
+    display: flex; gap: 12px;
+}
+.hf-download-btn {
+    padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent-dim);
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s; white-space: nowrap;
+}
+.hf-download-btn:hover {
+    background: rgba(0,255,136,0.15); border-color: var(--accent);
+    transform: translateY(-1px);
+}
+.hf-progress-bar {
+    height: 6px; border-radius: 3px; background: var(--bg-tertiary);
+    overflow: hidden; margin-top: 6px;
+}
+.hf-progress-fill {
+    height: 100%; background: var(--accent-gradient);
+    transition: width 0.5s ease; border-radius: 3px;
+}
+
+/* ─── Autonomy Floating Dashboard ─── */
+.autonomy-dashboard {
+    position: fixed; top: 12px; right: 12px; z-index: 500;
+    background: rgba(20,22,30,0.95); backdrop-filter: blur(16px);
+    border: 1px solid var(--border); border-radius: 14px;
+    padding: 10px 16px; display: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    animation: fadeSlideIn 0.3s ease-out;
+    font-size: 12px; min-width: 320px;
+}
+.autonomy-dashboard.visible { display: flex; gap: 12px; align-items: center; }
+.autonomy-stat {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.autonomy-stat-value { font-weight: 700; color: var(--accent); font-size: 14px; }
+.autonomy-stat-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
+.autonomy-current {
+    flex: 1; font-size: 11px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.autonomy-dashboard-btn {
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-subtle);
+    background: transparent; color: var(--text-secondary); font-size: 10px;
+    cursor: pointer; transition: all 0.2s; font-weight: 600;
+}
+.autonomy-dashboard-btn:hover { border-color: var(--accent); color: var(--accent); }
+.autonomy-dashboard-btn.danger { border-color: rgba(239,68,68,0.3); color: #f87171; }
+.autonomy-dashboard-btn.danger:hover { border-color: #ef4444; background: rgba(239,68,68,0.08); }
+
+/* ─── Verification Card (inline chat) ─── */
+.verification-card {
+    background: linear-gradient(135deg, rgba(59,130,246,0.06), rgba(16,185,129,0.06));
+    border: 1px solid rgba(59,130,246,0.2);
+    border-radius: 12px; padding: 12px 16px; margin: 8px 0;
+    font-size: 12px;
+}
+.verification-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0; color: var(--text-secondary);
+}
+.verification-row .v-label { font-weight: 600; min-width: 70px; color: var(--text-primary); }
+.verification-row .v-icon { font-size: 14px; }

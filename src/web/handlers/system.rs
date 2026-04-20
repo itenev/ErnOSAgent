@@ -320,3 +320,78 @@ pub async fn save_prompt(
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
+
+/// PUT /api/settings/model — Swap the active model and restart.
+pub async fn swap_model(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let model_name = match body["model"].as_str() {
+        Some(name) => name.to_string(),
+        None => return Json(serde_json::json!({"success": false, "error": "Missing 'model' field"})),
+    };
+
+    // Update config in memory
+    {
+        let mut config = state.mutable_config.write().await;
+
+        // Find the model file path
+        let models_dir = std::path::Path::new("models");
+        let model_path = models_dir.join(&model_name);
+        if !model_path.exists() {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": format!("Model file not found: {}", model_path.display()),
+            }));
+        }
+
+        config.llamacpp.model_path = model_path.to_string_lossy().to_string();
+        tracing::info!(model = %model_name, path = %config.llamacpp.model_path, "Model swap: updating config");
+
+        // Persist to ern-os.toml
+        if let Ok(serialized) = toml::to_string_pretty(&*config) {
+            if let Err(e) = std::fs::write("ern-os.toml", &serialized) {
+                tracing::error!(error = %e, "Failed to persist model config");
+                return Json(serde_json::json!({"success": false, "error": format!("Config write failed: {}", e)}));
+            }
+        }
+    }
+
+    tracing::info!(model = %model_name, "Model swap: config updated — scheduling restart");
+
+    // Schedule a graceful restart (exit, let process manager restart us)
+    tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tracing::info!("Model swap: exiting for restart");
+        std::process::exit(0);
+    });
+
+    Json(serde_json::json!({"success": true, "model": model_name, "message": "Restarting with new model..."}))
+}
+
+/// List available skill files from data/skills/.
+pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
+    let skills_dir = state.config.general.data_dir.join("skills");
+    let mut skills = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "md") {
+                let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                let description = content.lines()
+                    .find(|l| l.starts_with("description:"))
+                    .map(|l| l.trim_start_matches("description:").trim().to_string())
+                    .unwrap_or_default();
+                skills.push(serde_json::json!({
+                    "name": name,
+                    "description": description,
+                    "path": path.to_string_lossy(),
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({"skills": skills, "count": skills.len()}))
+}

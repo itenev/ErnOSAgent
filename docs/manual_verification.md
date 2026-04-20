@@ -182,7 +182,7 @@
 
 ---
 
-## 8. Tool Dispatch — All 27 Tools
+## 8. Tool Dispatch — All 29 Tools
 
 ### 8.1 Execution Tools
 
@@ -219,14 +219,30 @@
 | 8.3.4 | `interpretability` | `Use the interpretability tool to take a snapshot` | "Snapshot saved: data/snapshots/snapshot_*.json" with timestamp | ☐ |
 | 8.3.5 | `interpretability` (features) | `Use the interpretability tool to list features` | Feature list or "No SAE loaded" | ☐ |
 
-### 8.4 Control Tools
+### 8.4 Session & Introspection Tools
+
+| # | Tool | Prompt | Expected | Pass |
+|---|------|--------|----------|------|
+| 8.4.1 | `session_recall` (list) | `List my recent chat sessions` | Paginated session list with titles, dates, message counts | ☐ |
+| 8.4.2 | `session_recall` (get) | `Show me the full conversation from session [ID]` | Full message history with role labels | ☐ |
+| 8.4.3 | `session_recall` (summary) | `Summarize what we discussed in session [ID]` | Topic digest with first/last user messages | ☐ |
+| 8.4.4 | `session_recall` (search) | `Search my past sessions for 'scheduler'` | Matching sessions with snippets | ☐ |
+| 8.4.5 | `session_recall` (topics) | `What topics did we discuss in session [ID]?` | Numbered topic list from user messages | ☐ |
+| 8.4.6 | `introspect` (reasoning_log) | `Show me your recent reasoning log` | JSONL entries with inference/tool/audit events | ☐ |
+| 8.4.7 | `introspect` (agent_activity) | `What have the agents been doing?` | Activity feed entries or "No activity" | ☐ |
+| 8.4.8 | `introspect` (scheduler_status) | `What is the scheduler doing right now?` | Job list with schedules and recent executions | ☐ |
+| 8.4.9 | `introspect` (observer_audit) | `Show recent observer audit results` | Verdicts with confidence and categories | ☐ |
+| 8.4.10 | `introspect` (system_status) | `Give me a system health check` | Model, provider health, memory summary | ☐ |
+| 8.4.11 | `introspect` (my_tools) | `What tools do you have available?` | Full L1 + L2 tool listing | ☐ |
+
+### 8.5 Control Tools
 
 | # | Tool | Check | Expected | Pass |
 |---|------|-------|----------|------|
-| 8.4.1 | `reply_request` | Used internally — send a ReAct task and observe | Final answer delivered from ReAct via reply_request | ☐ |
-| 8.4.2 | `refuse_request` | Ask an impossible task: `Delete the entire filesystem` | Agent refuses with reason (uses refuse_request internally) | ☐ |
-| 8.4.3 | `start_react_system` | Send multi-step task | Escalation to L2 visible in terminal logs | ☐ |
-| 8.4.4 | `extend_turns` | Very complex task that needs 5+ steps | Terminal shows extend_turns if agent needs more iterations | ☐ |
+| 8.5.1 | `reply_request` | Used internally — send a ReAct task and observe | Final answer delivered from ReAct via reply_request | ☐ |
+| 8.5.2 | `refuse_request` | Ask an impossible task: `Delete the entire filesystem` | Agent refuses with reason (uses refuse_request internally) | ☐ |
+| 8.5.3 | `start_react_system` | Send multi-step task | Escalation to L2 visible in terminal logs | ☐ |
+| 8.5.4 | `extend_turns` | Very complex task that needs 5+ steps | Terminal shows extend_turns if agent needs more iterations | ☐ |
 
 ---
 
@@ -308,7 +324,7 @@ Use `curl` from a terminal while Ern-OS is running.
 | 10.9 | Memory procedures | `curl -s localhost:3000/api/memory/procedures \| python3 -m json.tool` | Procedures array | ☐ |
 | 10.10 | Memory scratchpad | `curl -s localhost:3000/api/memory/scratchpad \| python3 -m json.tool` | Scratchpad entries | ☐ |
 | 10.11 | Memory synaptic | `curl -s localhost:3000/api/memory/synaptic \| python3 -m json.tool` | Synaptic graph data | ☐ |
-| 10.12 | Tools catalog | `curl -s localhost:3000/api/tools \| python3 -m json.tool` | Array of 27 tool schemas | ☐ |
+| 10.12 | Tools catalog | `curl -s localhost:3000/api/tools \| python3 -m json.tool` | Array of 29 tool schemas | ☐ |
 | 10.13 | Training data | `curl -s localhost:3000/api/training \| python3 -m json.tool` | Golden/rejection buffer counts | ☐ |
 | 10.14 | Interp features | `curl -s localhost:3000/api/interpretability/features \| python3 -m json.tool` | Feature data or empty list | ☐ |
 | 10.15 | Interp snapshots | `curl -s localhost:3000/api/interpretability/snapshots \| python3 -m json.tool` | Snapshot list | ☐ |
@@ -511,7 +527,7 @@ Run these commands from the project root.
 | 5. Observer | 5 | Audit badges, toggle |
 | 6. Training Capture | 6 | Golden/rejection buffers |
 | 7. Memory (7 Tiers) | 25 | Timeline, scratchpad, lessons, synaptic, procedures, recall |
-| 8. Tool Dispatch (27) | 24 | Every tool tested with exact prompts |
+| 8. Tool Dispatch (29) | 35 | Every tool tested with exact prompts |
 | 9. Dashboard Views | 18 | All 6 tab views verified |
 | 10. REST API | 24 | All 24 API endpoints curl-tested |
 | 11. Learning Pipeline | 6 | Insights, decay, scheduler |
@@ -524,8 +540,8 @@ Run these commands from the project root.
 | 18. WebSocket | 5 | Streaming, events, sessions |
 | 19. Self-Coding | 18 | Containment, edit, recompile, checkpoint |
 | 20. Error Logs & Self-Healing | 8 | system_logs tool, self_edit audit |
-| 21. Master Capabilities Prompt | 15 | Full system stress test across all 78+ tool calls |
-| **Total** | **225** | |
+| 21. Master Capabilities Prompt | 15 | Full system stress test across all 90+ tool calls |
+| **Total** | **236** | |
 
 ---
 
@@ -628,8 +644,8 @@ I need you to run a COMPLETE system capabilities verification. Execute every sin
 ============================================================================
   PHASE 1: L1 Tools (executed BEFORE escalation to the ReAct loop)
   
-  These 47 tool calls use Layer 1's fast-reply path. Execute them in order.
-  After completing step 47, escalate to Layer 2 for Phase 2.
+  These 59 tool calls use Layer 1's fast-reply path. Execute them in order.
+  After completing step 59, escalate to Layer 2 for Phase 2.
 ============================================================================
 
 --- TOOL: run_bash_command ---
@@ -718,17 +734,34 @@ I need you to run a COMPLETE system capabilities verification. Execute every sin
 43. system_logs (search):     action="search", pattern="verification"
 44. system_logs (self_edits): action="self_edits"
 
+--- TOOL: session_recall ---
+(Tests all 5 session_recall actions with all arguments)
+45. session_recall (list):    action="list", page=1, per_page=5
+46. session_recall (search):  action="search", query="verification", limit=5
+47. session_recall (summary): action="summary", session_id=[pick any session_id from step 45]
+48. session_recall (get):     action="get", session_id=[same session_id]
+49. session_recall (topics):  action="topics", session_id=[same session_id]
+
+--- TOOL: introspect ---
+(Tests all 6 introspect actions with all arguments)
+50. introspect (reasoning_log):    action="reasoning_log", limit=10
+51. introspect (agent_activity):   action="agent_activity", limit=10
+52. introspect (scheduler_status): action="scheduler_status"
+53. introspect (observer_audit):   action="observer_audit", limit=5
+54. introspect (system_status):    action="system_status"
+55. introspect (my_tools):         action="my_tools"
+
 --- TOOL: generate_image ---
 (Tests image generation with all arguments)
-45. generate_image: prompt="A glowing neural network visualization on dark background, abstract digital art", width=512, height=512, steps=8, guidance=3.5
+56. generate_image: prompt="A glowing neural network visualization on dark background, abstract digital art", width=512, height=512, steps=8, guidance=3.5
 
 --- TOOL: create_artifact ---
 (Tests artifact creation with all arguments including artifact_type enum)
-46. create_artifact: title="Verification Report — L1 Phase", content="# Ern-OS L1 Verification\n\nAll L1 tools executed.\n\n## Tools Tested\n- run_bash_command ✅\n- web_search ✅\n- file_read ✅\n- file_write ✅\n- codebase_search ✅\n- browser (10 actions) ✅\n- memory (5 actions) ✅\n- scratchpad (4 actions) ✅\n- timeline (3 actions) ✅\n- lessons (4 actions) ✅\n- learning (5 actions) ✅\n- steering (4 actions) ✅\n- interpretability (3 actions) ✅\n- system_logs (4 actions) ✅\n- generate_image ✅\n\n## Analysis\nThis artifact exercises the 'report' type. Other valid types: plan, analysis, code.", artifact_type="report"
+57. create_artifact: title="Verification Report — L1 Phase", content="# Ern-OS L1 Verification\n\nAll L1 tools executed.\n\n## Tools Tested\n- run_bash_command ✅\n- web_search ✅\n- file_read ✅\n- file_write ✅\n- codebase_search ✅\n- browser (10 actions) ✅\n- memory (5 actions) ✅\n- scratchpad (4 actions) ✅\n- timeline (3 actions) ✅\n- lessons (4 actions) ✅\n- learning (5 actions) ✅\n- steering (4 actions) ✅\n- interpretability (3 actions) ✅\n- system_logs (4 actions) ✅\n- session_recall (5 actions) ✅\n- introspect (6 actions) ✅\n- generate_image ✅\n\n## Analysis\nThis artifact exercises the 'report' type. Other valid types: plan, analysis, code.", artifact_type="report"
 
 --- TOOL: propose_plan ---
 (Tests the plan proposal UI flow with all arguments)
-47. propose_plan: title="L2 Verification Plan", plan_markdown="## Objective\nExercise all ReAct-exclusive tools.\n\n## Steps\n1. Populate synaptic graph (all 8 actions)\n2. Create/view/refine/delete self_skills (all 5 actions)\n3. Exercise codebase_edit (patch/insert/multi_patch/delete)\n4. Exercise checkpoint (list/rollback/prune)\n5. Spawn sub-agent\n6. Clean up and deliver report", estimated_turns=20
+58. propose_plan: title="L2 Verification Plan", plan_markdown="## Objective\nExercise all ReAct-exclusive tools.\n\n## Steps\n1. Populate synaptic graph (all 8 actions)\n2. Create/view/refine/delete self_skills (all 5 actions)\n3. Exercise codebase_edit (patch/insert/multi_patch/delete)\n4. Exercise checkpoint (list/rollback/prune)\n5. Spawn sub-agent\n6. Clean up and deliver report", estimated_turns=20
 
 
 ============================================================================
@@ -747,65 +780,65 @@ Now escalate using start_react_system with:
   PHASE 2: L2 ReAct Loop Tools (executed INSIDE the ReAct loop)
   
   These 31 tool calls use Layer 2's multi-turn ReAct loop.
-  After completing step 78, exit the loop with reply_request (Phase 3).
+  After completing step 90, exit the loop with reply_request (Phase 3).
 ============================================================================
 
 --- TOOL: synaptic ---
 (Tests ALL 8 synaptic actions with all arguments. Builds a small knowledge graph.)
-48. synaptic (store):              action="store", concept="Ern-OS Verification", data={"description": "Master capabilities test entity"}, layer="system"
-49. synaptic (store #2):           action="store", concept="System Integrity", data={"description": "Cross-tool verification proof"}, layer="core"
-50. synaptic (store_relationship): action="store_relationship", concept="Ern-OS Verification", target="System Integrity", edge_type="validates"
-51. synaptic (search):             action="search", concept="Verification", limit=10
-52. synaptic (recent):             action="recent", limit=5
-53. synaptic (stats):              action="stats"
-54. synaptic (beliefs):            action="beliefs"
-55. synaptic (layers):             action="layers"
-56. synaptic (co_activate):        action="co_activate", concept="Ern-OS Verification", target="System Integrity"
+60. synaptic (store):              action="store", concept="Ern-OS Verification", data={"description": "Master capabilities test entity"}, layer="system"
+61. synaptic (store #2):           action="store", concept="System Integrity", data={"description": "Cross-tool verification proof"}, layer="core"
+62. synaptic (store_relationship): action="store_relationship", concept="Ern-OS Verification", target="System Integrity", edge_type="validates"
+63. synaptic (search):             action="search", concept="Verification", limit=10
+64. synaptic (recent):             action="recent", limit=5
+65. synaptic (stats):              action="stats"
+66. synaptic (beliefs):            action="beliefs"
+67. synaptic (layers):             action="layers"
+68. synaptic (co_activate):        action="co_activate", concept="Ern-OS Verification", target="System Integrity"
 
 --- TOOL: self_skills ---
 (Tests ALL 5 self_skills actions. Creates a skill, views it, refines it, verifies the refinement, then deletes it in cleanup.)
-57. self_skills (list):   action="list"
-58. self_skills (create): action="create", name="System Verification", description="Run comprehensive tool verification across all tiers", steps=[{"tool": "memory", "instruction": "Check status"}, {"tool": "system_logs", "instruction": "Check for errors"}, {"tool": "learning", "instruction": "Check training status"}]
-59. self_skills (view):   action="view", name="System Verification"
-60. self_skills (refine): action="refine", id=[id from step 58], steps=[{"tool": "memory", "instruction": "Check status"}, {"tool": "system_logs", "instruction": "Check for errors"}, {"tool": "learning", "instruction": "Check training status"}, {"tool": "steering", "instruction": "Check steering status"}]
-61. self_skills (list):   action="list" (verify refine applied)
+69. self_skills (list):   action="list"
+70. self_skills (create): action="create", name="System Verification", description="Run comprehensive tool verification across all tiers", steps=[{"tool": "memory", "instruction": "Check status"}, {"tool": "system_logs", "instruction": "Check for errors"}, {"tool": "learning", "instruction": "Check training status"}]
+71. self_skills (view):   action="view", name="System Verification"
+72. self_skills (refine): action="refine", id=[id from step 70], steps=[{"tool": "memory", "instruction": "Check status"}, {"tool": "system_logs", "instruction": "Check for errors"}, {"tool": "learning", "instruction": "Check training status"}, {"tool": "steering", "instruction": "Check steering status"}]
+73. self_skills (list):   action="list" (verify refine applied)
 
 --- TOOL: codebase_edit ---
 (Tests ALL 4 codebase_edit actions. Edits the file created in step 5, then creates+deletes a test file.)
-62. codebase_edit (insert):      action="insert", path="data/verification_test.txt", anchor="All systems nominal.", content="\nL2 ReAct verification appended successfully.", position="after"
-63. codebase_edit (patch):       action="patch", path="data/verification_test.txt", find="L2 ReAct verification appended successfully.", replace="L2 ReAct verification PASSED."
-64. codebase_edit (multi_patch): action="multi_patch", path="data/verification_test.txt", patches=[{"find": "Master verification", "replace": "MASTER VERIFICATION"}, {"find": "PASSED.", "replace": "PASSED ✅."}]
-65. file_write:                  path="data/verification_delete_me.txt", content="This file will be deleted by codebase_edit delete action"
-66. codebase_edit (delete):      action="delete", path="data/verification_delete_me.txt"
+74. codebase_edit (insert):      action="insert", path="data/verification_test.txt", anchor="All systems nominal.", content="\nL2 ReAct verification appended successfully.", position="after"
+75. codebase_edit (patch):       action="patch", path="data/verification_test.txt", find="L2 ReAct verification appended successfully.", replace="L2 ReAct verification PASSED."
+76. codebase_edit (multi_patch): action="multi_patch", path="data/verification_test.txt", patches=[{"find": "Master verification", "replace": "MASTER VERIFICATION"}, {"find": "PASSED.", "replace": "PASSED ✅."}]
+77. file_write:                  path="data/verification_delete_me.txt", content="This file will be deleted by codebase_edit delete action"
+78. codebase_edit (delete):      action="delete", path="data/verification_delete_me.txt"
 
 --- TOOL: checkpoint ---
 (Tests ALL 3 checkpoint actions)
-67. checkpoint (list):     action="list"
-68. checkpoint (rollback): action="rollback", id=[pick first checkpoint id from step 67]
-69. checkpoint (prune):    action="prune", max_age_hours=9999
+79. checkpoint (list):     action="list"
+80. checkpoint (rollback): action="rollback", id=[pick first checkpoint id from step 79]
+81. checkpoint (prune):    action="prune", max_age_hours=9999
 
 --- TOOL: spawn_sub_agent ---
 (Tests sub-agent spawning with all arguments)
-70. spawn_sub_agent: task="Verify the memory system status and report back", tools=["memory", "system_logs"], max_turns=3
+82. spawn_sub_agent: task="Verify the memory system status and report back", tools=["memory", "system_logs"], max_turns=3
 
 --- Verify previous edits ---
-71. file_read: path="data/verification_test.txt"
+83. file_read: path="data/verification_test.txt"
 
 --- L2 verification marker ---
-72. run_bash_command: command="echo 'VERIFICATION_MARKER_L2_REACT' && wc -l src/tools/*.rs && echo 'Tool files verified'"
+84. run_bash_command: command="echo 'VERIFICATION_MARKER_L2_REACT' && wc -l src/tools/*.rs && echo 'Tool files verified'"
 
 --- TOOL: learning (remaining action from Phase 1) ---
-73. learning (list_adapters): action="list_adapters"
+85. learning (list_adapters): action="list_adapters"
 
 --- CLEANUP (run these LAST, in this order) ---
-74. memory (reset):       action="reset"
-75. scratchpad (unpin):   action="unpin", key="verification_run"
-76. self_skills (delete): action="delete", name="System Verification"
-77. lessons (remove):     action="remove", query="verification"
+86. memory (reset):       action="reset"
+87. scratchpad (unpin):   action="unpin", key="verification_run"
+88. self_skills (delete): action="delete", name="System Verification"
+89. lessons (remove):     action="remove", query="verification"
 
 --- TOOL: system_recompile ---
 (Tests the recompile blocker — should return "RECOMPILE BLOCKED: No source files changed")
-78. system_recompile: (no args — expected to be blocked since no code was changed)
+90. system_recompile: (no args — expected to be blocked since no code was changed)
 
 --- TOOL: refuse_request ---
 Note: Do NOT actually refuse. Instead, just acknowledge that refuse_request exists and would be called with reason="The request violates containment policy" if needed. You can skip actually calling it since it would terminate the loop prematurely.
@@ -852,6 +885,8 @@ After all tools have been called, use reply_request (with message arg) to delive
 | checkpoint | list,rollback,prune | 3/3 | action, id, max_age_hours | 3/3 | ✅/❌ |
 | system_recompile | 1 | 1 | (none) | 0/0 | ✅/❌ |
 | spawn_sub_agent | 1 | 1 | task, tools, max_turns | 3/3 | ✅/❌ |
+| session_recall | list,get,summary,search,topics | 5/5 | action, session_id, query, page, per_page, limit | 6/6 | ✅/❌ |
+| introspect | reasoning_log,agent_activity,scheduler_status,observer_audit,system_status,my_tools | 6/6 | action, limit, session_id | 3/3 | ✅/❌ |
 | start_react_system | 1 | 1 | objective, plan, planned_turns | 3/3 | ✅/❌ |
 | propose_plan | 1 | 1 | title, plan_markdown, estimated_turns | 3/3 | ✅/❌ |
 | reply_request | 1 | 1 | message | 1/1 | ✅/❌ |
@@ -859,11 +894,11 @@ After all tools have been called, use reply_request (with message arg) to delive
 | extend_turns | 1 | 0 (auto if needed) | progress_summary, remaining_work, additional_turns | N/A | ⚠️ |
 
 ## Summary
-- Total unique tools: 27/27
-- Total action variants: 73/73
-- Total argument variants: 80+
-- Total tool calls: ~78
-- L1 tools passed: [count]/47
+- Total unique tools: 29/29
+- Total action variants: 84/84
+- Total argument variants: 89+
+- Total tool calls: ~90
+- L1 tools passed: [count]/59
 - L2 tools passed: [count]/31
 - Overall: [PASS/FAIL]
 - Timestamp: [current UTC time]

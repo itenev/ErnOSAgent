@@ -52,6 +52,7 @@ const ErnOS = (() => {
             case 'done':            onDone(); break;
             case 'error':           onError(msg); break;
             case 'autonomy_state':  handleAutonomyResponse(msg); break;
+            default: handleNewWsMessages(msg); break;
         }
     }
 
@@ -59,6 +60,21 @@ const ErnOS = (() => {
     function onConnected(msg) {
         document.getElementById('model-badge').textContent = msg.model || 'unknown';
         loadSessions();
+        checkModelDownloadProgress();
+    }
+
+    async function checkModelDownloadProgress() {
+        try {
+            const resp = await fetch('/api/model/download-progress');
+            const data = await resp.json();
+            if (data.downloading && data.progress !== undefined) {
+                const badge = document.getElementById('model-badge');
+                const pct = Math.round(data.progress * 100);
+                badge.textContent = `⬇ Downloading ${data.model || 'model'} ${pct}%`;
+                // Poll again in 3s if still downloading
+                setTimeout(checkModelDownloadProgress, 3000);
+            }
+        } catch { /* not downloading or endpoint unavailable */ }
     }
 
     function onTextDelta(msg) {
@@ -427,11 +443,13 @@ const ErnOS = (() => {
         if (attachedFiles.length > 0) {
             payload.images = attachedFiles.map(f => f.dataUrl);
         }
-        ws.send(JSON.stringify(payload));
 
+        // Create bubble BEFORE sending — prevents thinking_delta race condition
+        // where backend streams thinking before currentAssistantEl exists
         currentAssistantEl = addMessage('assistant', '');
         pendingText = '';
         thinkingEl = null;
+        ws.send(JSON.stringify(payload));
     }
 
     function stopGeneration() {
@@ -462,6 +480,13 @@ const ErnOS = (() => {
         if (!currentSessionId) return;
         if (sessionTitled[currentSessionId]) return;
         sessionTitled[currentSessionId] = true;
+
+        // Skip if session already has a custom or auto-generated title (not "New Chat")
+        const sidebar = document.querySelector(`.session-item[data-id="${currentSessionId}"] .session-title`);
+        if (sidebar) {
+            const existingTitle = sidebar.textContent.trim();
+            if (existingTitle && existingTitle !== 'New Chat') return;
+        }
 
         // Get the first user message from the DOM
         const userMsgs = document.querySelectorAll('.message.user .message-content');
@@ -1375,7 +1400,7 @@ const ErnOS = (() => {
         if (view === 'interpretability') loadInterpretabilityView();
         if (view === 'steering') loadSteeringView();
         if (view === 'logs') loadLogsView();
-        if (view === 'settings') { loadSettingsView(); loadAutonomyState(); loadSnapshots(); setTimeout(loadVersionInfo, 100); }
+        if (view === 'settings') { loadSettingsView().then(() => loadVersionInfo()); loadAutonomyState(); loadSnapshots(); loadModelHub(); }
         if (view === 'identity') loadIdentityView();
         if (view === 'agents') loadAgentsView();
         if (view === 'scheduler') loadSchedulerView();
@@ -1615,9 +1640,78 @@ const ErnOS = (() => {
                     ${rejectionHtml}
                 </div>
             `;
+
+            // Load learning subsystem data
+            loadLearningDashboard();
         } catch (e) {
             document.getElementById('training-sections').innerHTML = '<p class="empty-state">Failed to load training data</p>';
         }
+    }
+
+    async function loadLearningDashboard() {
+        const container = document.getElementById('training-sections');
+
+        // Learning Status
+        try {
+            const resp = await fetch('/api/learning/status');
+            const ls = await resp.json();
+            container.insertAdjacentHTML('beforeend', `
+                <div class="training-section" style="margin-top:16px">
+                    <div class="training-section-header">
+                        <span>🧬 Learning Engine</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:8px 0">
+                        <div class="data-card" style="padding:10px"><div style="font-size:20px;font-weight:700;color:var(--accent)">${ls.adapter_count ?? 0}</div><div style="font-size:10px;color:var(--text-muted)">LoRA Adapters</div></div>
+                        <div class="data-card" style="padding:10px"><div style="font-size:20px;font-weight:700;color:var(--accent)">${ls.total_sleep_cycles ?? 0}</div><div style="font-size:10px;color:var(--text-muted)">Sleep Cycles</div></div>
+                        <div class="data-card" style="padding:10px"><div style="font-size:20px;font-weight:700;color:var(--accent)">${ls.total_training_steps ?? 0}</div><div style="font-size:10px;color:var(--text-muted)">Training Steps</div></div>
+                        <div class="data-card" style="padding:10px"><div style="font-size:14px;font-weight:600;color:var(--text-secondary)">${ls.last_sleep ? new Date(ls.last_sleep).toLocaleString() : 'Never'}</div><div style="font-size:10px;color:var(--text-muted)">Last Sleep</div></div>
+                    </div>
+                </div>
+            `);
+        } catch (e) { /* learning status not available — skip */ }
+
+        // Sleep History
+        try {
+            const resp = await fetch('/api/learning/sleep-history');
+            const sh = await resp.json();
+            if (sh.entries && sh.entries.length > 0) {
+                const rows = sh.entries.slice(0, 15).map(e => {
+                    const t = new Date(e.timestamp || e.completed_at);
+                    return `<tr>
+                        <td style="font-size:11px;white-space:nowrap">${t.toLocaleString()}</td>
+                        <td>${e.samples ?? '—'}</td>
+                        <td>${e.loss !== undefined ? e.loss.toFixed(4) : '—'}</td>
+                        <td>${e.duration_ms ? (e.duration_ms / 1000).toFixed(1) + 's' : '—'}</td>
+                    </tr>`;
+                }).join('');
+                container.insertAdjacentHTML('beforeend', `
+                    <div class="training-section" style="margin-top:12px">
+                        <div class="training-section-header"><span>😴 Sleep History</span><span class="training-count">${sh.entries.length}</span></div>
+                        <table class="data-table"><thead><tr><th>Time</th><th>Samples</th><th>Loss</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>
+                    </div>
+                `);
+            }
+        } catch (e) { /* sleep history not available */ }
+
+        // Adapters
+        try {
+            const resp = await fetch('/api/learning/adapters');
+            const ad = await resp.json();
+            if (ad.adapters && ad.adapters.length > 0) {
+                const cards = ad.adapters.map(a => `
+                    <div class="data-card" style="margin-bottom:8px">
+                        <div class="card-title">${escapeHtml(a.name || a.id)}</div>
+                        <div class="card-meta">${a.layers ? a.layers + ' layers' : ''} ${a.rank ? '· rank ' + a.rank : ''} ${a.created_at ? '· ' + new Date(a.created_at).toLocaleDateString() : ''}</div>
+                    </div>
+                `).join('');
+                container.insertAdjacentHTML('beforeend', `
+                    <div class="training-section" style="margin-top:12px">
+                        <div class="training-section-header"><span>🔌 LoRA Adapters</span><span class="training-count">${ad.adapters.length}</span></div>
+                        ${cards}
+                    </div>
+                `);
+            }
+        } catch (e) { /* adapters not available */ }
     }
 
     // ─── Scheduler View ───
@@ -1666,10 +1760,13 @@ const ErnOS = (() => {
                 + '<select id="job-schedule-type" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:12px">'
                 + '<option value="interval">Interval (s)</option><option value="cron">Cron expr</option><option value="once">Once (UTC)</option></select>'
                 + '<input id="job-schedule-value" placeholder="300" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:12px;font-family:\'JetBrains Mono\',monospace">'
-                + '<select id="job-task-type" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:12px">'
-                + '<option value="health_check">Health Check</option><option value="sleep_cycle">Sleep Cycle</option><option value="lesson_decay">Lesson Decay</option>'
+                + '<select id="job-task-type" onchange="document.getElementById(\'custom-cmd-row\').style.display = this.value === \'custom\' ? \'block\' : \'none\'; document.getElementById(\'prompt-row\').style.display = this.value === \'prompt\' ? \'block\' : \'none\';" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:12px">'
+                + '<option value="prompt">🧠 Prompt Job</option><option value="health_check">Health Check</option><option value="sleep_cycle">Sleep Cycle</option><option value="lesson_decay">Lesson Decay</option>'
                 + '<option value="memory_consolidate">Memory Consolidate</option><option value="snapshot_capture">Snapshot Capture</option><option value="synaptic_prune">Synaptic Prune</option>'
                 + '<option value="buffer_flush">Buffer Flush</option><option value="log_rotate">Log Rotate</option><option value="custom">Custom Shell</option></select>'
+                + '</div>'
+                + '<div id="prompt-row" style="margin-bottom:8px">'
+                + '<textarea id="job-prompt" placeholder="Natural language instruction — the agent will use all available tools to fulfill this." rows="3" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:8px 10px;border-radius:6px;font-size:12px;width:100%;resize:vertical;box-sizing:border-box;font-family:inherit"></textarea>'
                 + '</div>'
                 + '<div id="custom-cmd-row" style="display:none;margin-bottom:8px">'
                 + '<input id="job-custom-cmd" placeholder="shell command (e.g. echo hello)" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary);padding:6px 10px;border-radius:6px;font-size:12px;width:100%;font-family:\'JetBrains Mono\',monospace;box-sizing:border-box">'
@@ -1681,8 +1778,45 @@ const ErnOS = (() => {
             container.querySelectorAll('.sched-del-btn').forEach(btn => {
                 btn.addEventListener('click', () => deleteSchedulerJob(btn.dataset.jobId));
             });
+
+            // Load execution history
+            loadSchedulerHistory();
         } catch (e) {
             container.innerHTML = '<p class="empty-state">Failed to load scheduler</p>';
+        }
+    }
+
+    async function loadSchedulerHistory() {
+        try {
+            const resp = await fetch('/api/scheduler/history');
+            const data = await resp.json();
+            if (!data.entries || data.entries.length === 0) return;
+
+            const container = document.getElementById('scheduler-sections');
+            const historyHtml = data.entries.slice(0, 25).map(h => {
+                const t = new Date(h.started_at);
+                const badge = h.success
+                    ? '<span style="color:var(--accent);font-size:10px;font-weight:700">✓</span>'
+                    : '<span style="color:var(--error);font-size:10px;font-weight:700">✗</span>';
+                return '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border-subtle);font-size:12px">'
+                    + badge
+                    + '<span style="min-width:60px;color:var(--text-muted);font-size:10px;font-family:\'JetBrains Mono\',monospace">' + t.toLocaleTimeString() + '</span>'
+                    + '<span style="flex:1;font-weight:600">' + escapeHtml(h.job_name) + '</span>'
+                    + '<span style="color:var(--text-muted);font-size:10px">' + escapeHtml(h.task) + '</span>'
+                    + '<span style="color:var(--text-muted);font-size:10px;min-width:50px;text-align:right">' + h.duration_ms + 'ms</span>'
+                    + '</div>';
+            }).join('');
+
+            container.insertAdjacentHTML('beforeend',
+                '<div class="settings-card" style="margin-top:16px;padding:0">'
+                + '<div style="padding:16px 20px;border-bottom:1px solid var(--border-subtle)">'
+                + '<div class="card-title" style="margin:0"><span class="title-icon">📜</span> Execution History</div>'
+                + '</div>'
+                + '<div style="padding:12px 20px">' + historyHtml + '</div>'
+                + '</div>'
+            );
+        } catch (e) {
+            // History is optional — fail silently
         }
     }
 
@@ -1769,7 +1903,7 @@ const ErnOS = (() => {
                             <span class="label-text">Active Model</span>
                             <span class="label-desc">Loaded GGUF model (requires restart)</span>
                         </div>
-                        <select class="setting-select" id="model-select" disabled title="Model swap requires restart">
+                        <select class="setting-select" id="model-select" onchange="ErnOS.swapModel(this.value)" title="Select model — will restart server">
                             ${llmModels.map(m => `<option value="${escapeHtml(m.name)}" ${model.name && model.name.includes(m.name.replace('.gguf','')) ? 'selected' : ''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`).join('')}
                         </select>
                     </div>
@@ -1994,14 +2128,24 @@ const ErnOS = (() => {
 
             // SAE Status
             const saeEl = document.getElementById('interp-sae-status');
-            saeEl.innerHTML = `<div class="sae-status-card">
-                <div class="sae-stat"><div class="stat-value">${saeData.feature_count}</div><div class="stat-label">Features</div></div>
-                <div class="sae-stat"><div class="stat-value">${saeData.input_dim?.toLocaleString()}</div><div class="stat-label">Input Dim</div></div>
-                <div class="sae-stat"><div class="stat-value">${saeData.hidden_dim}</div><div class="stat-label">Hidden Dim</div></div>
-                <div class="sae-stat"><div class="stat-value">${Number(saeData.sparsity_coefficient || 0).toFixed(3)}</div><div class="stat-label">λ Sparsity</div></div>
-                <div class="sae-stat"><div class="stat-value">${saeData.model_loaded ? '✅' : '—'}</div><div class="stat-label">Weights</div></div>
-                <div class="sae-stat"><div class="stat-value">${snapData.count}</div><div class="stat-label">Snapshots</div></div>
-            </div>`;
+            if (!saeData.model_loaded && !saeData.feature_count) {
+                saeEl.innerHTML = `<div class="sae-status-card" style="background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.15);padding:20px;border-radius:12px;text-align:center">
+                    <div style="font-size:28px;margin-bottom:8px">🧠</div>
+                    <div style="font-size:14px;font-weight:600;color:var(--warning);margin-bottom:4px">SAE Weights Not Loaded</div>
+                    <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+                        Place <code style="background:var(--surface-2);padding:1px 4px;border-radius:3px">*.safetensors</code> weights in <code style="background:var(--surface-2);padding:1px 4px;border-radius:3px">models/sae/</code> and restart, or train via the learning pipeline.
+                    </div>
+                </div>`;
+            } else {
+                saeEl.innerHTML = `<div class="sae-status-card">
+                    <div class="sae-stat"><div class="stat-value">${saeData.feature_count}</div><div class="stat-label">Features</div></div>
+                    <div class="sae-stat"><div class="stat-value">${saeData.input_dim?.toLocaleString()}</div><div class="stat-label">Input Dim</div></div>
+                    <div class="sae-stat"><div class="stat-value">${saeData.hidden_dim}</div><div class="stat-label">Hidden Dim</div></div>
+                    <div class="sae-stat"><div class="stat-value">${Number(saeData.sparsity_coefficient || 0).toFixed(3)}</div><div class="stat-label">λ Sparsity</div></div>
+                    <div class="sae-stat"><div class="stat-value">${saeData.model_loaded ? '✅' : '—'}</div><div class="stat-label">Weights</div></div>
+                    <div class="sae-stat"><div class="stat-value">${snapData.count}</div><div class="stat-label">Snapshots</div></div>
+                </div>`;
+            }
 
             // Category filters
             const categories = [...new Set(featData.features.map(f => f.category))];
@@ -2154,9 +2298,10 @@ const ErnOS = (() => {
         } catch (e) {
             container.innerHTML = '<p class="empty-state">Failed to load logs</p>';
         }
-        // Also load self-edit audit and checkpoints
+        // Also load self-edit audit, checkpoints, and observer history
         loadSelfEditLog();
         loadCheckpoints();
+        loadObserverHistory();
     }
 
     function toggleLogFilter(level) {
@@ -2218,16 +2363,42 @@ const ErnOS = (() => {
         }
     }
 
+    async function loadObserverHistory() {
+        const container = document.getElementById('observer-history-container');
+        if (!container) return;
+        try {
+            const resp = await fetch('/api/observer/history');
+            const data = await resp.json();
+            if (!data.entries || data.entries.length === 0) {
+                container.innerHTML = '<p class="empty-state">No observer audits recorded yet</p>';
+                return;
+            }
+            container.innerHTML = `<div class="log-entries">${data.entries.slice(0, 50).map(e => {
+                const t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+                const verdictClass = e.verdict === 'allowed' || e.approved ? 'INFO' : 'WARN';
+                const verdictLabel = e.verdict || (e.approved ? 'PASS' : 'FAIL');
+                const conf = e.confidence !== undefined ? (e.confidence * 100).toFixed(0) + '%' : '';
+                return `<div class="log-entry level-${verdictClass}">
+                    <span class="log-time">${escapeHtml(t)}</span>
+                    <span class="log-level ${verdictClass}">${verdictLabel.toUpperCase()}</span>
+                    <span class="log-message">${conf ? '[' + conf + '] ' : ''}${escapeHtml(e.category || e.failure_category || '')} ${escapeHtml(e.reason || e.what_went_wrong || '')}</span>
+                </div>`;
+            }).join('')}</div>`;
+        } catch {
+            container.innerHTML = '<p class="empty-state">Failed to load observer history</p>';
+        }
+    }
+
     // ─── Scheduler Actions ───
     async function toggleSchedulerJob(id) {
         await fetch(`/api/scheduler/jobs/${id}/toggle`, { method: 'PUT' });
-        loadSettingsView();
+        loadSchedulerView();
     }
 
     async function deleteSchedulerJob(id) {
         if (!confirm('Delete this scheduled job?')) return;
         await fetch(`/api/scheduler/jobs/${id}`, { method: 'DELETE' });
-        loadSettingsView();
+        loadSchedulerView();
     }
 
     function showAddJobForm() {
@@ -2249,8 +2420,9 @@ const ErnOS = (() => {
         const desc = document.getElementById('job-desc')?.value || '';
         const schedType = document.getElementById('job-schedule-type')?.value || 'interval';
         const schedValue = document.getElementById('job-schedule-value')?.value || '300';
-        const taskType = document.getElementById('job-task-type')?.value || 'health_check';
+        const taskType = document.getElementById('job-task-type')?.value || 'prompt';
         const customCmd = document.getElementById('job-custom-cmd')?.value || 'echo ok';
+        const prompt = document.getElementById('job-prompt')?.value || '';
 
         const body = {
             name, description: desc,
@@ -2258,6 +2430,7 @@ const ErnOS = (() => {
             schedule_value: schedType === 'interval' ? parseInt(schedValue) || 300 : schedValue,
             task_type: taskType,
             custom_command: customCmd,
+            prompt: prompt,
         };
 
         const resp = await fetch('/api/scheduler/jobs', {
@@ -2267,10 +2440,37 @@ const ErnOS = (() => {
         });
 
         if (resp.ok) {
-            loadSettingsView();
+            loadSchedulerView();
         } else {
             const err = await resp.json();
             alert('Failed: ' + (err.error || 'Unknown error'));
+        }
+    }
+
+    async function swapModel(modelName) {
+        if (!confirm(`Switching to ${modelName} requires restarting the inference server. Continue?`)) {
+            loadSettingsView(); // Reset dropdown to current
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/settings/model', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelName }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                addSystemMessage(`🔄 Switching to **${modelName}** — server restarting...`);
+                // Wait for restart then reload
+                setTimeout(() => location.reload(), 3000);
+            } else {
+                addSystemMessage(`❌ Failed to swap model: ${data.error || 'Unknown error'}`);
+                loadSettingsView();
+            }
+        } catch (e) {
+            addSystemMessage(`❌ Model swap failed: ${e.message}`);
+            loadSettingsView();
         }
     }
 
@@ -2926,8 +3126,109 @@ const ErnOS = (() => {
             agentsList = agentsData.agents || [];
             renderAgentsList(agentsList);
             renderTeamsList(teamsData.teams || []);
+            loadAgentActivity();
+            loadDagStatus();
         } catch (e) {
             console.error('Failed to load agents:', e);
+        }
+    }
+
+    async function loadAgentActivity() {
+        const feed = document.getElementById('agent-activity-feed');
+        if (!feed) return;
+        try {
+            const resp = await fetch('/api/agents/activity');
+            const data = await resp.json();
+            const dot = document.getElementById('activity-live-dot');
+            const countEl = document.getElementById('active-agent-count');
+            const entries = data.entries || [];
+            const activeCount = data.active_agents || 0;
+
+            if (dot) dot.className = 'live-dot' + (activeCount > 0 ? ' active' : '');
+            if (countEl) countEl.textContent = activeCount + ' active';
+
+            if (entries.length === 0) {
+                feed.innerHTML = '<p class="empty-state">No agent activity yet</p>';
+                return;
+            }
+
+            feed.innerHTML = entries.slice(0, 30).map(e => {
+                const statusClass = e.status || 'pending';
+                const icon = {running:'🔄', done:'✅', failed:'❌', pending:'⏳'}[statusClass] || '⏳';
+                const t = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+                return `<div class="activity-entry">
+                    <div class="activity-badge ${statusClass}">${icon}</div>
+                    <div style="flex:1;min-width:0">
+                        <div><span class="activity-agent">🤖 ${escapeHtml(e.agent_name || e.agent_id || 'Agent')}</span> <span class="activity-action">▸ ${escapeHtml(e.action || '')}</span></div>
+                        ${e.detail ? '<div class="activity-detail">└─ ' + escapeHtml(e.detail) + '</div>' : ''}
+                    </div>
+                    <span class="activity-time">${t}</span>
+                </div>`;
+            }).join('');
+        } catch { /* activity not available */ }
+    }
+
+    async function loadDagStatus() {
+        try {
+            const resp = await fetch('/api/planning/status');
+            const data = await resp.json();
+            const panel = document.getElementById('dag-panel');
+            if (!panel) return;
+
+            if (!data.active || !data.dag) {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = 'block';
+            const dag = data.dag;
+            const nodes = dag.nodes || [];
+            const completed = nodes.filter(n => n.status === 'Completed').length;
+            const total = nodes.length;
+            const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+            document.getElementById('dag-progress-label').textContent = completed + '/' + total;
+            document.getElementById('dag-progress-bar').style.width = pct + '%';
+
+            const list = document.getElementById('dag-task-list');
+            list.innerHTML = nodes.map(n => {
+                const icons = {Pending:'⏳', Ready:'🟡', Running:'🔄', Completed:'✅', Failed:'❌', Blocked:'🚫'};
+                const icon = icons[n.status] || '⏳';
+                const cls = n.status === 'Completed' ? ' completed' : '';
+                const dur = n.completed_at && n.started_at
+                    ? ((new Date(n.completed_at) - new Date(n.started_at)) / 1000).toFixed(0) + 's'
+                    : n.status === 'Running' ? 'running...' : '';
+                return `<div class="dag-task${cls}">
+                    <span class="dag-task-icon">${icon}</span>
+                    <span class="dag-task-title">${escapeHtml(n.title)}</span>
+                    <span class="dag-task-time">${dur}</span>
+                </div>` + (n.depends_on && n.depends_on.length && n.status !== 'Completed'
+                    ? '<div class="dag-task-dep">└─ blocked by: ' + n.depends_on.join(', ') + '</div>' : '');
+            }).join('');
+        } catch { /* planning not available */ }
+    }
+
+    async function sendAgentDirection() {
+        const input = document.getElementById('agent-direction-input');
+        if (!input || !input.value.trim()) return;
+        const direction = input.value.trim();
+
+        // Send to the first active/running agent
+        try {
+            const resp = await fetch('/api/agents/activity');
+            const data = await resp.json();
+            const running = (data.entries || []).find(e => e.status === 'running');
+            const agentId = running ? (running.agent_id || 'default') : 'default';
+
+            await fetch(`/api/agents/${agentId}/direct`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ direction }),
+            });
+            input.value = '';
+            showToast('Direction sent to agent', 'success');
+        } catch {
+            showToast('Failed to send direction', 'error');
         }
     }
 
@@ -3019,14 +3320,37 @@ const ErnOS = (() => {
         } catch (e) { console.error('Failed to toggle observer:', e); }
     }
 
-    function chatWithAgent(agentId) {
-        // Store selected agent, switch to chat
-        currentAgentId = agentId;
+    async function chatWithAgent(agentId) {
         const agent = agentsList.find(a => a.id === agentId);
-        if (agent) {
+        if (!agent) return;
+
+        // Create a new session for this agent
+        try {
+            const resp = await fetch('/api/sessions', { method: 'POST' });
+            const data = await resp.json();
+            if (data.id) {
+                currentSessionId = data.id;
+                currentAgentId = agentId;
+                document.getElementById('messages').innerHTML = '';
+
+                // Rename the session to the agent's name
+                await fetch(`/api/sessions/${data.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: `🤖 ${agent.name}` }),
+                });
+
+                await loadSessions();
+                addSystemMessage(`🤖 Now chatting with agent: **${agent.name}**\n\n_${agent.description || 'No description'}_`);
+                switchView('chat');
+            }
+        } catch (e) {
+            console.error('Failed to create agent session:', e);
+            // Fallback: just switch to chat with agent context
+            currentAgentId = agentId;
             addSystemMessage(`🤖 Now chatting with agent: **${agent.name}**`);
+            switchView('chat');
         }
-        switchView('chat');
     }
 
     async function createTeam() {
@@ -3331,13 +3655,214 @@ const ErnOS = (() => {
         }
     }
 
+    // ─── HuggingFace Model Hub ───
+    async function loadModelHub() {
+        // Load local models
+        try {
+            const resp = await fetch('/api/models');
+            const data = await resp.json();
+            const container = document.getElementById('hf-local-models');
+            if (container && data.models && data.models.length > 0) {
+                container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Local Models (./models/)</div>'
+                    + data.models.filter(m => !m.is_mmproj).map(m => `<div class="hf-model-card">
+                        <div class="hf-model-info">
+                            <div class="hf-model-name">${escapeHtml(m.name)}</div>
+                            <div class="hf-model-meta"><span>${m.size_gb} GB</span></div>
+                        </div>
+                        <button class="hf-download-btn" onclick="ErnOS.swapModel('${escapeHtml(m.name)}')" style="border-color:var(--border);background:var(--bg-tertiary);color:var(--text-secondary)">Switch</button>
+                    </div>`).join('');
+            }
+        } catch { /* models not available */ }
+
+        // Check download progress
+        pollModelDownload();
+    }
+
+    async function searchHuggingFace() {
+        const input = document.getElementById('hf-search-input');
+        const container = document.getElementById('hf-search-results');
+        if (!input || !container) return;
+        const q = input.value.trim();
+        if (!q) return;
+
+        container.innerHTML = '<p class="empty-state">Searching HuggingFace...</p>';
+
+        try {
+            const resp = await fetch(`/api/models/search?q=${encodeURIComponent(q)}`);
+            const data = await resp.json();
+            const models = data.models || [];
+
+            if (models.length === 0) {
+                container.innerHTML = '<p class="empty-state">No GGUF models found</p>';
+                return;
+            }
+
+            container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Search Results</div>'
+                + models.map(m => {
+                    const id = m.id || '';
+                    const likes = m.likes || 0;
+                    const downloads = m.downloads || 0;
+                    return `<div class="hf-model-card">
+                        <div class="hf-model-info">
+                            <div class="hf-model-name">${escapeHtml(id)}</div>
+                            <div class="hf-model-meta">
+                                <span>❤️ ${likes.toLocaleString()}</span>
+                                <span>⬇️ ${downloads.toLocaleString()}</span>
+                            </div>
+                        </div>
+                        <button class="hf-download-btn" onclick="ErnOS.downloadModel('${escapeHtml(id)}')">⬇ Download</button>
+                    </div>`;
+                }).join('');
+        } catch (e) {
+            container.innerHTML = '<p class="empty-state">Search failed: ' + e.message + '</p>';
+        }
+    }
+
+    async function downloadModel(repo) {
+        // Guess most common GGUF filename pattern
+        const filename = prompt('Enter GGUF filename to download:', repo.split('/').pop() + '-Q4_K_M.gguf');
+        if (!filename) return;
+
+        try {
+            await fetch('/api/models/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repo, filename }),
+            });
+            showToast('Download started: ' + filename, 'success');
+            pollModelDownload();
+        } catch (e) {
+            showToast('Download failed: ' + e.message, 'error');
+        }
+    }
+
+    let downloadPollTimer = null;
+    function pollModelDownload() {
+        if (downloadPollTimer) clearInterval(downloadPollTimer);
+        downloadPollTimer = setInterval(async () => {
+            try {
+                const resp = await fetch('/api/model/download-progress');
+                const data = await resp.json();
+                const el = document.getElementById('hf-download-progress');
+                if (!el) return;
+
+                if (data.downloading && data.progress !== undefined) {
+                    const pct = Math.round(data.progress * 100);
+                    const totalGB = data.total_bytes ? (data.total_bytes / 1073741824).toFixed(1) : '?';
+                    const dlGB = data.downloaded_bytes ? (data.downloaded_bytes / 1073741824).toFixed(1) : '0';
+                    el.style.display = 'block';
+                    el.innerHTML = `<div style="font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:4px">⬇️ ${escapeHtml(data.model || 'model')} — ${pct}%</div>
+                        <div class="hf-progress-bar"><div class="hf-progress-fill" style="width:${pct}%"></div></div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${dlGB} / ${totalGB} GB</div>`;
+
+                    // Update model badge too
+                    const badge = document.getElementById('model-badge');
+                    if (badge) badge.textContent = `⬇ ${pct}% ${data.model || ''}`;
+                } else {
+                    el.style.display = 'none';
+                    if (data.complete) {
+                        showToast('Model download complete: ' + (data.model || ''), 'success');
+                        loadModelHub();
+                    }
+                    clearInterval(downloadPollTimer);
+                    downloadPollTimer = null;
+                }
+            } catch {
+                clearInterval(downloadPollTimer);
+                downloadPollTimer = null;
+            }
+        }, 2000);
+    }
+
+    // ─── WS Message Handlers for New Features ───
+    function handleNewWsMessages(msg) {
+        switch (msg.type) {
+            case 'task_progress':
+                updateDagTask(msg);
+                break;
+            case 'agent_activity':
+                appendAgentActivity(msg);
+                break;
+            case 'verification_result':
+                showVerificationResult(msg);
+                break;
+            case 'progress_report':
+                updateAutonomyDashboard(msg);
+                break;
+        }
+    }
+
+    function updateDagTask(msg) {
+        const panel = document.getElementById('dag-panel');
+        if (panel) panel.style.display = 'block';
+        loadDagStatus(); // Refresh the full DAG
+    }
+
+    function appendAgentActivity(msg) {
+        const feed = document.getElementById('agent-activity-feed');
+        if (!feed) return;
+        const emptyState = feed.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+
+        const statusClass = msg.status || 'running';
+        const icon = {running:'🔄', done:'✅', failed:'❌', pending:'⏳'}[statusClass] || '⏳';
+        const t = new Date().toLocaleTimeString();
+        const html = `<div class="activity-entry">
+            <div class="activity-badge ${statusClass}">${icon}</div>
+            <div style="flex:1;min-width:0">
+                <div><span class="activity-agent">🤖 ${escapeHtml(msg.agent_name || 'Agent')}</span> <span class="activity-action">▸ ${escapeHtml(msg.action || '')}</span></div>
+                ${msg.detail ? '<div class="activity-detail">└─ ' + escapeHtml(msg.detail) + '</div>' : ''}
+            </div>
+            <span class="activity-time">${t}</span>
+        </div>`;
+        feed.insertAdjacentHTML('afterbegin', html);
+    }
+
+    function showVerificationResult(msg) {
+        if (!currentAssistantEl) return;
+        const buildIcon = msg.success ? '✅' : '❌';
+        const testIcon = msg.tests_passed !== undefined ? (msg.tests_failed === 0 ? '✅' : '❌') : '⏭';
+        const html = `<div class="verification-card">
+            <div style="font-weight:700;margin-bottom:6px;color:var(--text-primary)">🔍 Verification</div>
+            <div class="verification-row"><span class="v-label">Build:</span> <span class="v-icon">${buildIcon}</span> ${msg.errors ? msg.errors + ' errors' : 'Success'} ${msg.warnings ? '(' + msg.warnings + ' warnings)' : ''}</div>
+            ${msg.tests_passed !== undefined ? `<div class="verification-row"><span class="v-label">Tests:</span> <span class="v-icon">${testIcon}</span> ${msg.tests_passed} passed, ${msg.tests_failed || 0} failed</div>` : ''}
+            ${msg.fix_attempts ? `<div class="verification-row"><span class="v-label">Auto-fix:</span> ${msg.fix_attempts} attempts</div>` : ''}
+        </div>`;
+        currentAssistantEl.querySelector('.message-content')?.insertAdjacentHTML('beforeend', html);
+    }
+
+    function updateAutonomyDashboard(msg) {
+        let dash = document.querySelector('.autonomy-dashboard');
+        if (!dash) {
+            dash = document.createElement('div');
+            dash.className = 'autonomy-dashboard';
+            document.body.appendChild(dash);
+        }
+        dash.classList.add('visible');
+
+        const elapsed = msg.elapsed_min !== undefined ? `${msg.elapsed_min}m` : '—';
+        const completed = msg.completed !== undefined ? msg.completed : 0;
+        const remaining = msg.remaining !== undefined ? msg.remaining : 0;
+        const files = msg.files_modified !== undefined ? msg.files_modified : 0;
+        const current = msg.current || 'Working...';
+
+        dash.innerHTML = `
+            <div style="font-size:14px">🚀</div>
+            <div class="autonomy-stat"><span class="autonomy-stat-value">${elapsed}</span><span class="autonomy-stat-label">Elapsed</span></div>
+            <div class="autonomy-stat"><span class="autonomy-stat-value">${completed}/${completed + remaining}</span><span class="autonomy-stat-label">Tasks</span></div>
+            <div class="autonomy-stat"><span class="autonomy-stat-value">${files}</span><span class="autonomy-stat-label">Files</span></div>
+            <div class="autonomy-current">${escapeHtml(current)}</div>
+            <button class="autonomy-dashboard-btn danger" onclick="ErnOS.stopGeneration()">Stop</button>
+        `;
+    }
+
     // ─── Public API ───
     return {
         init, sendMessage, newChat, switchSession, deleteSession, stopGeneration,
         toggleTheme, toggleSidebar, handleKeyDown, autoResize,
         copyMessage, copyCode, removeFile, handleFilesSelected,
         switchView, loadMemoryTier, toggleTool,
-        factoryReset, setTheme, setFontSize, setMsgWidth,
+        factoryReset, setTheme, setFontSize, setMsgWidth, swapModel,
         saveApiKey, clearApiKey, savePlatformConfig, connectPlatform, disconnectPlatform,
         filterFeatures, toggleLogFilter,
         toggleSchedulerJob, deleteSchedulerJob, showAddJobForm, createSchedulerJob,
@@ -3372,6 +3897,10 @@ const ErnOS = (() => {
         setAutonomy, createSnapshot, restoreSnapshot, deleteSnapshot,
         // Mobile
         setComputeMode,
+        // Agent Activity & DAG
+        sendAgentDirection, loadAgentActivity, loadDagStatus,
+        // HuggingFace Model Hub
+        searchHuggingFace, downloadModel,
     };
 })();
 
