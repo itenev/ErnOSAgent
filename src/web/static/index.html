@@ -11,7 +11,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="/app.css?v=9">
+    <link rel="stylesheet" href="/app.css?v=10">
     <!-- Vendor: syntax highlighting, LaTeX, diagrams (offline) -->
     <link rel="stylesheet" href="/vendor/github-dark.min.css">
     <link rel="stylesheet" href="/vendor/katex.min.css">
@@ -464,15 +464,16 @@
                     <!-- System Snapshots -->
                     <div class="settings-card">
                         <div class="card-title"><span class="title-icon">📸</span> System Snapshots</div>
-                        <div class="setting-row">
-                            <div class="setting-label" style="flex:0 0 auto">
-                                <input type="text" id="snapshot-label" placeholder="Snapshot label..." class="setting-select" style="min-width:220px;padding:8px 14px">
-                            </div>
-                            <button class="save-prompt-btn" style="margin:0;padding:8px 20px;font-size:12px" onclick="ErnOS.createSnapshot()">📸 Create Snapshot</button>
+                        <div class="snapshot-create-row">
+                            <input type="text" id="snapshot-label" placeholder="Enter snapshot label..." class="snapshot-input">
+                            <button class="snapshot-create-btn" onclick="ErnOS.createSnapshot()">
+                                <span class="btn-icon">📸</span> Create Snapshot
+                            </button>
                         </div>
-                        <div id="snapshots-container" style="margin-top:6px">
-                            <p class="empty-state" style="font-size:11px;padding:8px 0;margin:0">Loading snapshots...</p>
+                        <div id="snapshots-container" class="snapshots-list">
+                            <p class="empty-state">Loading snapshots...</p>
                         </div>
+                    </div>
                     <!-- Compute Mode (shown on mobile) -->
                     <div class="settings-card" id="compute-mode-card" style="display:none">
                         <div class="card-title"><span class="title-icon">📡</span> Compute Mode</div>
@@ -607,6 +608,6 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="/app.js?v=18"></script>
+    <script src="/app.js?v=19"></script>
 </body>
 </html>

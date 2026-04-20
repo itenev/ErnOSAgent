@@ -1,5 +1,6 @@
-// Ern-OS Code Extension — AI chat sidebar for code-server
-// Self-contained. No build step. Connects to the running Ern-OS WebSocket.
+// Ern-OS Code Extension — AI chat for VS Code
+// Registers as a Chat Participant so Ern-OS is the default in the native Chat panel.
+// Also provides a sidebar webview and right-click context menu commands.
 
 const vscode = require('vscode');
 
@@ -8,11 +9,22 @@ let ws;
 let currentSessionId = '';
 
 function activate(context) {
+    // ─── VS Code Chat Participant (native Chat panel) ───
+    try {
+        const participant = vscode.chat.createChatParticipant('ernos', handleChatRequest);
+        participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'icon.svg');
+        context.subscriptions.push(participant);
+    } catch (_e) {
+        // Chat Participant API may not be available in older VS Code / code-server
+    }
+
+    // ─── Sidebar Webview ───
     const provider = new ErnosChatProvider(context);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('ernos-chat', provider)
     );
 
+    // ─── Right-click commands ───
     context.subscriptions.push(
         vscode.commands.registerCommand('ernos.sendSelection', () => {
             sendEditorSelection('');
@@ -28,6 +40,87 @@ function activate(context) {
     connectWs();
 }
 
+// ─── Chat Participant Handler ───
+// This makes Ern-OS the responder in the native VS Code Chat panel.
+// No GitHub sign-in required.
+async function handleChatRequest(request, context, stream, token) {
+    const content = request.prompt;
+    if (!content) return;
+
+    // Ensure connected
+    if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
+        connectWs();
+        // Wait up to 3s for connection
+        for (let i = 0; i < 30 && (!ws || ws.readyState !== 1); i++) {
+            await new Promise(r => setTimeout(r, 100));
+        }
+        if (!ws || ws.readyState !== 1) {
+            stream.markdown('⚠️ **Not connected to Ern-OS engine.** Make sure it is running on `localhost:3000`.');
+            return;
+        }
+    }
+
+    return new Promise((resolve) => {
+        let done = false;
+
+        // Create a one-shot message handler for this request
+        const handler = (data) => {
+            if (done) return;
+            let msg;
+            try { msg = JSON.parse(typeof data === 'string' ? data : data.toString()); } catch (_) { return; }
+
+            switch (msg.type) {
+                case 'ack':
+                    if (msg.session_id) currentSessionId = msg.session_id;
+                    break;
+                case 'thinking_delta':
+                    // Show thinking as progress
+                    stream.progress(msg.content || 'Thinking...');
+                    break;
+                case 'text_delta':
+                    stream.markdown(msg.content || '');
+                    break;
+                case 'tool_executing':
+                    stream.progress(`⚙️ ${msg.name}...`);
+                    break;
+                case 'tool_completed':
+                    stream.progress(`${msg.success ? '✅' : '❌'} ${msg.name}`);
+                    break;
+                case 'audit_running':
+                    stream.progress('🔍 Observer audit...');
+                    break;
+                case 'error':
+                    stream.markdown(`\n\n❌ **Error:** ${msg.message || 'Unknown error'}`);
+                    cleanup();
+                    break;
+                case 'done':
+                    cleanup();
+                    break;
+            }
+        };
+
+        const cleanup = () => {
+            done = true;
+            if (ws) {
+                if (ws.off) ws.off('message', handler);
+                else if (ws.removeEventListener) ws.removeEventListener('message', handler);
+            }
+            resolve();
+        };
+
+        // Register handler
+        if (ws.on) ws.on('message', handler);
+        else ws.addEventListener('message', (e) => handler(e.data));
+
+        // Cancel on token
+        token.onCancellationRequested(() => cleanup());
+
+        // Send message
+        ws.send(JSON.stringify({ type: 'chat', content, session_id: currentSessionId || '' }));
+    });
+}
+
+// ─── Sidebar Functions ───
 function sendEditorSelection(prefix) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
@@ -38,7 +131,6 @@ function sendEditorSelection(prefix) {
 }
 
 function getWsUrl() {
-    // code-server runs on 8443 by default, Ern-OS engine on 3000
     return 'ws://127.0.0.1:3000/ws';
 }
 
@@ -49,12 +141,9 @@ function connectWs() {
         const WebSocket = require('ws');
         ws = new WebSocket(getWsUrl());
     } catch (_e) {
-        // ws module may not be available in code-server's node —
-        // fall back to the built-in globalThis.WebSocket if available
         try {
             ws = new WebSocket(getWsUrl());
         } catch (_e2) {
-            // No WebSocket runtime — post error to webview
             postToWebview({ type: 'status', connected: false, error: 'No WebSocket runtime' });
             setTimeout(connectWs, 5000);
             return;

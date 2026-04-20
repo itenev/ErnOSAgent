@@ -2,13 +2,22 @@
   "name": "ernos-chat",
   "displayName": "Ern-OS",
   "description": "AI assistant — connects to your local Ern-OS agent engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "ernos",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["AI", "Chat"],
-  "activationEvents": ["onView:ernos-chat"],
+  "activationEvents": ["onStartupFinished"],
   "main": "./extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "ernos",
+        "name": "ernos",
+        "fullName": "Ern-OS Agent",
+        "description": "Local AI assistant — powered by your Ern-OS engine",
+        "isDefault": true
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {

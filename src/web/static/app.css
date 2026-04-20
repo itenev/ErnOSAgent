@@ -2413,3 +2413,110 @@ body.is-mobile .mobile-feature-banner {
 }
 .verification-row .v-label { font-weight: 600; min-width: 70px; color: var(--text-primary); }
 .verification-row .v-icon { font-size: 14px; }
+
+/* ── System Snapshots ── */
+.snapshot-create-row {
+    display: flex; gap: 10px; align-items: center;
+    padding: 14px 0 10px;
+}
+.snapshot-input {
+    flex: 1;
+    background: var(--input-bg, rgba(0,0,0,0.3));
+    border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+    border-radius: 10px;
+    padding: 10px 16px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.snapshot-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,255,136,0.15);
+}
+.snapshot-input::placeholder { color: var(--text-muted, rgba(255,255,255,0.3)); }
+.snapshot-create-btn {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--accent);
+    color: var(--bg-primary, #0a0a0f);
+    border: none;
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: transform 0.15s, box-shadow 0.2s, opacity 0.15s;
+}
+.snapshot-create-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,255,136,0.3);
+}
+.snapshot-create-btn:active { transform: translateY(0); opacity: 0.85; }
+.snapshot-create-btn .btn-icon { font-size: 14px; }
+
+.snapshots-list { margin-top: 4px; }
+
+.snapshot-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    margin-bottom: 6px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    transition: background 0.15s, border-color 0.15s;
+}
+.snapshot-entry:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.1);
+}
+.snapshot-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.snapshot-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.snapshot-time {
+    font-size: 11px;
+    color: var(--text-secondary, rgba(255,255,255,0.5));
+}
+.snapshot-commit {
+    font-size: 10px;
+    color: var(--text-muted, rgba(255,255,255,0.3));
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.snapshot-actions-row {
+    display: flex; gap: 6px; flex-shrink: 0; margin-left: 12px;
+}
+.snapshot-btn {
+    border: none;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform 0.15s, opacity 0.15s;
+}
+.snapshot-btn:hover { transform: translateY(-1px); }
+.snapshot-btn:active { transform: translateY(0); opacity: 0.8; }
+.snapshot-btn.restore {
+    background: rgba(0,255,136,0.12);
+    color: var(--accent);
+    border: 1px solid rgba(0,255,136,0.2);
+}
+.snapshot-btn.restore:hover { background: rgba(0,255,136,0.2); }
+.snapshot-btn.delete {
+    background: rgba(255,68,68,0.08);
+    color: #ff6666;
+    border: 1px solid rgba(255,68,68,0.15);
+    padding: 6px 10px;
+}
+.snapshot-btn.delete:hover { background: rgba(255,68,68,0.15); }
