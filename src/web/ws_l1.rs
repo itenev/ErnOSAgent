@@ -66,7 +66,11 @@ pub async fn run_l1_tool_chain(
         })).await;
 
         messages.push(Message::assistant_tool_call(&current_tc.id, &current_tc.name, &current_tc.arguments));
-        messages.push(Message::tool_result(&current_tc.id, &result.output));
+        if result.images.is_empty() {
+            messages.push(Message::tool_result(&current_tc.id, &result.output));
+        } else {
+            messages.push(Message::tool_result_multipart(&current_tc.id, &result.output, result.images));
+        }
 
         let rx_next = match provider.chat(messages, Some(tools), true).await {
             Ok(rx) => rx,

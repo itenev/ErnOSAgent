@@ -244,7 +244,11 @@ async fn execute_retry_tool_chain(
         })).await;
 
         messages.push(Message::assistant_tool_call(&tc.id, &tc.name, &tc.arguments));
-        messages.push(Message::tool_result(&tc.id, &result.output));
+        if result.images.is_empty() {
+            messages.push(Message::tool_result(&tc.id, &result.output));
+        } else {
+            messages.push(Message::tool_result_multipart(&tc.id, &result.output, result.images));
+        }
 
         let rx = match provider.chat(messages, Some(tools), true).await {
             Ok(rx) => rx,

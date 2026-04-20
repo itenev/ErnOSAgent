@@ -17,6 +17,8 @@ pub struct ToolResult {
     pub name: String,
     pub output: String,
     pub success: bool,
+    /// Optional images (base64 data URIs) for multimodal tool results.
+    pub images: Vec<String>,
 }
 
 impl ToolCall {

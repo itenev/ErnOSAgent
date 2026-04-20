@@ -351,6 +351,7 @@ async fn execute_sub_agent(
             name: tc.name.clone(),
             output: "Error: sub-agent requires non-empty 'task' and 'tools' array".to_string(),
             success: false,
+            images: Vec::new(),
         };
     }
 
@@ -383,6 +384,7 @@ async fn execute_sub_agent(
                     result.summary
                 ),
                 success: result.success,
+                images: Vec::new(),
             }
         }
         Err(e) => {
@@ -392,6 +394,7 @@ async fn execute_sub_agent(
                 name: tc.name.clone(),
                 output: format!("Sub-agent error: {}", e),
                 success: false,
+                images: Vec::new(),
             }
         }
     }

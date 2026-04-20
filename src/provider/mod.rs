@@ -89,6 +89,28 @@ impl Message {
         }
     }
 
+    /// Create a multimodal tool result with text + images (base64 data URIs).
+    /// Images are sent as proper image_url content blocks, not inline base64 text.
+    pub fn tool_result_multipart(call_id: &str, output: &str, image_urls: Vec<String>) -> Self {
+        if image_urls.is_empty() {
+            return Self::tool_result(call_id, output);
+        }
+        let mut parts = vec![serde_json::json!({"type": "text", "text": output})];
+        for url in &image_urls {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": url }
+            }));
+        }
+        Self {
+            role: "tool".to_string(),
+            content: serde_json::Value::Array(parts),
+            images: image_urls,
+            tool_calls: None,
+            tool_call_id: Some(call_id.to_string()),
+        }
+    }
+
     /// Create a multipart message with text and images (base64 data URIs).
     pub fn multipart(role: &str, text: &str, image_urls: Vec<String>) -> Self {
         let mut parts = Vec::new();

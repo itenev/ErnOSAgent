@@ -102,6 +102,7 @@ async fn run_sub_agent_inner(
                             name: tc.name.clone(),
                             output: format!("[REJECTED] Tool '{}' not allowed", tc.name),
                             success: false,
+                            images: Vec::new(),
                         }));
                     } else {
                         tool_names.push(tc.name.clone());

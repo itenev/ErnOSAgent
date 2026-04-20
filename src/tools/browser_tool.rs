@@ -139,7 +139,6 @@ pub async fn browse_url(
 
     let page = browser.new_page(url).await
         .context("Failed to open page")?;
-    page.wait_for_navigation().await.ok();
 
     let title = page.get_title().await
         .unwrap_or_default()
@@ -168,7 +167,6 @@ pub async fn screenshot_url(
 
     let page = browser.new_page(url).await
         .context("Failed to open page")?;
-    page.wait_for_navigation().await.ok();
 
     let screenshot = page.screenshot(
         chromiumoxide::page::ScreenshotParams::builder()
@@ -218,7 +216,6 @@ async fn action_open(state: &Arc<RwLock<BrowserState>>, args: &serde_json::Value
     let browser = s.browser.as_ref().context("Browser not initialized")?;
     let page = browser.new_page(url).await
         .context("Failed to open page")?;
-    page.wait_for_navigation().await.ok();
 
     let title = page.get_title().await.unwrap_or_default().unwrap_or_default();
     let page_id = format!("page_{}", s.next_page_id);
@@ -351,7 +348,6 @@ async fn action_navigate(state: &Arc<RwLock<BrowserState>>, args: &serde_json::V
 
     page.goto(url).await
         .with_context(|| format!("Failed to navigate to: {}", url))?;
-    page.wait_for_navigation().await.ok();
 
     let title = page.get_title().await.unwrap_or_default().unwrap_or_default();
     let context = get_page_context(page).await;

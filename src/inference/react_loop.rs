@@ -74,7 +74,11 @@ impl ReactContext {
         } else {
             format!("Error: {}", result.output)
         };
-        self.messages.push(Message::tool_result(&result.tool_call_id, &content));
+        if result.images.is_empty() {
+            self.messages.push(Message::tool_result(&result.tool_call_id, &content));
+        } else {
+            self.messages.push(Message::tool_result_multipart(&result.tool_call_id, &content, result.images.clone()));
+        }
         self.tool_results.push(result);
         self.iteration += 1;
     }
@@ -92,7 +96,11 @@ impl ReactContext {
             } else {
                 format!("Error: {}", r.output)
             };
-            self.messages.push(Message::tool_result(&r.tool_call_id, &content));
+            if r.images.is_empty() {
+                self.messages.push(Message::tool_result(&r.tool_call_id, &content));
+            } else {
+                self.messages.push(Message::tool_result_multipart(&r.tool_call_id, &content, r.images.clone()));
+            }
             self.tool_results.push(r);
         }
         self.iteration += 1;
@@ -213,6 +221,7 @@ mod tests {
             name: "shell".into(),
             output: "file.txt".into(),
             success: true,
+            images: Vec::new(),
         });
         assert_eq!(ctx.iteration, 1);
         assert_eq!(ctx.tool_results.len(), 1);

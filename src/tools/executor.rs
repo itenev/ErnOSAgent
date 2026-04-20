@@ -41,12 +41,14 @@ pub async fn execute(tool_call: &ToolCall) -> Result<ToolResult> {
             name: tool_call.name.clone(),
             output,
             success: true,
+            images: Vec::new(),
         }),
         Err(e) => Ok(ToolResult {
             tool_call_id: tool_call.id.clone(),
             name: tool_call.name.clone(),
             output: format!("Error: {}", e),
             success: false,
+            images: Vec::new(),
         }),
     }
 }

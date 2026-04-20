@@ -18,6 +18,16 @@ pub async fn execute_tool_with_state(
         "Tool dispatch START"
     );
 
+    // Browser tool: screenshot images are returned separately for multimodal context.
+    if tc.name == "browser" {
+        let mut images = Vec::new();
+        let mut result = match tc.name.as_str() {
+            _ => dispatch_desktop_tool(state, &tc.name, &args).await,
+        };
+        maybe_auto_screenshot_to_images(state, &args, &mut result, &mut images).await;
+        return format_tool_result_with_images(&tc.id, &tc.name, result, start.elapsed(), images);
+    }
+
     let result = match tc.name.as_str() {
         "run_bash_command" => dispatch_shell(&args).await,
         "web_search" => dispatch_web_search(&args).await,
@@ -33,7 +43,7 @@ pub async fn execute_tool_with_state(
         "codebase_search" => crate::tools::codebase_search::execute(&args).await,
         "file_read" => crate::tools::file_read::execute(&args).await,
         "file_write" => crate::tools::file_write::execute(&args).await,
-        "browse_url" | "screenshot_url" | "browser" | "generate_image" | "system_recompile" =>
+        "browse_url" | "screenshot_url" | "generate_image" | "system_recompile" =>
             dispatch_desktop_tool(state, &tc.name, &args).await,
         "create_artifact" => crate::tools::artifact_tool::execute(&args).await,
         "codebase_edit" => dispatch_codebase_edit(state, &args).await,
@@ -50,12 +60,22 @@ pub async fn execute_tool_with_state(
     format_tool_result(&tc.id, &tc.name, result, elapsed)
 }
 
-/// Format a tool execution result into a ToolResult with structured logging.
 fn format_tool_result(
     id: &str,
     name: &str,
     result: anyhow::Result<String>,
     elapsed: std::time::Duration,
+) -> schema::ToolResult {
+    format_tool_result_with_images(id, name, result, elapsed, Vec::new())
+}
+
+/// Format a tool execution result into a ToolResult with optional images.
+fn format_tool_result_with_images(
+    id: &str,
+    name: &str,
+    result: anyhow::Result<String>,
+    elapsed: std::time::Duration,
+    images: Vec<String>,
 ) -> schema::ToolResult {
     match result {
         Ok(output) => {
@@ -63,10 +83,11 @@ fn format_tool_result(
                 tool = %name, id = %id,
                 elapsed_ms = elapsed.as_millis() as u64,
                 output_len = output.len(),
+                images = images.len(),
                 "Tool dispatch OK"
             );
             schema::ToolResult {
-                tool_call_id: id.to_string(), name: name.to_string(), output, success: true,
+                tool_call_id: id.to_string(), name: name.to_string(), output, success: true, images,
             }
         }
         Err(e) => {
@@ -87,7 +108,7 @@ fn format_tool_result(
             );
             schema::ToolResult {
                 tool_call_id: id.to_string(), name: name.to_string(),
-                output: error_context, success: false,
+                output: error_context, success: false, images: Vec::new(),
             }
         }
     }
@@ -247,9 +268,7 @@ async fn dispatch_desktop_tool(
                 crate::tools::browser_tool::screenshot_url(&state.browser, url).await
             }
             "browser" => {
-                let mut result = crate::tools::browser_tool::execute_action(&state.browser, args).await;
-                maybe_auto_screenshot(state, args, &mut result).await;
-                result
+                crate::tools::browser_tool::execute_action(&state.browser, args).await
             }
             "generate_image" => crate::tools::image_gen_tool::execute(args).await,
             "system_recompile" => dispatch_system_recompile().await,
@@ -263,32 +282,51 @@ async fn dispatch_desktop_tool(
     }
 }
 
-/// Append a viewport screenshot to browser open/navigate results for vision models.
+/// Save a viewport screenshot to disk and push its data URI into images vec
+/// for proper multimodal tool results (image_url content blocks, not inline base64 text).
 #[cfg(feature = "desktop")]
-async fn maybe_auto_screenshot(
+async fn maybe_auto_screenshot_to_images(
     state: &AppState,
     args: &serde_json::Value,
     result: &mut anyhow::Result<String>,
+    images: &mut Vec<String>,
 ) {
     let action = args["action"].as_str().unwrap_or("");
     if action != "open" && action != "navigate" { return; }
     if !state.model_spec.supports_vision { return; }
 
     let page_id = args["page_id"].as_str().unwrap_or("page_0");
-    if let Ok(ref mut text) = result {
+    if result.is_ok() {
         let s = state.browser.read().await;
         if let Some(page) = s.get_page_or_latest(page_id) {
-            match page.screenshot(
+            let screenshot_fut = page.screenshot(
                 chromiumoxide::page::ScreenshotParams::builder().build(),
-            ).await {
-                Ok(screenshot) => {
+            );
+            match tokio::time::timeout(std::time::Duration::from_secs(3), screenshot_fut).await {
+                Ok(Ok(screenshot)) => {
+                    // Save to disk for API access
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let filename = format!("{}.png", id);
+                    let dir = std::path::PathBuf::from("data/images");
+                    std::fs::create_dir_all(&dir).ok();
+                    std::fs::write(dir.join(&filename), &screenshot).ok();
+
+                    // Push data URI for multimodal context (proper image_url block)
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&screenshot);
-                    text.push_str(&format!("\n\n[AUTO-SCREENSHOT]\ndata:image/png;base64,{}", b64));
-                    tracing::info!(action, page_id, "Auto-screenshot appended ({} bytes)", screenshot.len());
+                    images.push(format!("data:image/png;base64,{}", b64));
+
+                    // Append only the file reference to text (not 277KB of base64)
+                    if let Ok(ref mut text) = result {
+                        text.push_str(&format!("\n\n![viewport screenshot](/api/images/{})", filename));
+                    }
+                    tracing::info!(action, page_id, "Auto-screenshot saved ({} bytes)", screenshot.len());
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(error = %e, "Auto-screenshot failed — continuing without");
+                }
+                Err(_) => {
+                    tracing::warn!(action, page_id, "Auto-screenshot timed out (3s) — continuing without");
                 }
             }
         }

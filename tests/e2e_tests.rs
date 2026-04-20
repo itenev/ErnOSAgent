@@ -421,7 +421,7 @@ mod react_e2e {
         };
         ctx.add_tool_result(&tc, ToolResult {
             tool_call_id: "tc1".into(), name: "shell".into(),
-            output: "ok".into(), success: true,
+            output: "ok".into(), success: true, images: Vec::new(),
         });
         assert_eq!(ctx.iteration, 1);
         assert_eq!(ctx.tool_results.len(), 1);
