@@ -144,9 +144,10 @@ impl PlatformAdapter for DiscordAdapter {
                 // First chunk: reply to the original message
                 let result = ch.send_message(http.as_ref(), serenity::builder::CreateMessage::new()
                     .content(chunk)
-                    .reference_message(serenity::all::MessageReference::from(
+                    .reference_message(serenity::all::MessageReference::from((
+                        ch,
                         serenity::all::MessageId::new(msg_id),
-                    ))
+                    )))
                 ).await;
 
                 // Fallback: if reply fails (stale reference), send as channel message
@@ -160,6 +161,52 @@ impl PlatformAdapter for DiscordAdapter {
                     .context("Failed to send Discord chunk")?;
             }
         }
+        Ok(())
+    }
+
+    async fn start_typing(&self, channel_id: &str) -> Result<()> {
+        let http = self.http.as_ref().context("Discord not connected")?;
+        let channel = channel_id.parse::<u64>().context("Invalid channel ID")?;
+        let _ = serenity::all::ChannelId::new(channel)
+            .broadcast_typing(http.as_ref()).await;
+        Ok(())
+    }
+
+    async fn create_thinking_thread(&self, channel_id: &str, message_id: &str, title: &str) -> Result<String> {
+        let http = self.http.as_ref().context("Discord not connected")?;
+        let channel = channel_id.parse::<u64>().context("Invalid channel ID")?;
+        let msg_id = message_id.parse::<u64>().context("Invalid message ID")?;
+        let ch = serenity::all::ChannelId::new(channel);
+
+        let thread = ch.create_thread_from_message(
+            http.as_ref(),
+            serenity::all::MessageId::new(msg_id),
+            serenity::builder::CreateThread::new(title)
+                .auto_archive_duration(serenity::all::AutoArchiveDuration::OneHour),
+        ).await.context("Failed to create thinking thread")?;
+
+        Ok(thread.id.get().to_string())
+    }
+
+    async fn send_to_thread(&self, thread_id: &str, content: &str) -> Result<()> {
+        let http = self.http.as_ref().context("Discord not connected")?;
+        let tid = thread_id.parse::<u64>().context("Invalid thread ID")?;
+        let ch = serenity::all::ChannelId::new(tid);
+
+        // Chunk for Discord's 2000 char limit
+        let chunks = chunk_message(content, 2000);
+        for chunk in chunks {
+            ch.say(http.as_ref(), &chunk).await
+                .context("Failed to send to thinking thread")?;
+        }
+        Ok(())
+    }
+
+    async fn delete_thread(&self, thread_id: &str) -> Result<()> {
+        let http = self.http.as_ref().context("Discord not connected")?;
+        let tid = thread_id.parse::<u64>().context("Invalid thread ID")?;
+        let _ = serenity::all::ChannelId::new(tid)
+            .delete(http.as_ref()).await;
         Ok(())
     }
 

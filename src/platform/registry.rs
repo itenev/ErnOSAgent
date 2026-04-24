@@ -87,6 +87,65 @@ impl PlatformRegistry {
     pub fn adapters_mut(&mut self) -> &mut Vec<Box<dyn PlatformAdapter>> {
         &mut self.adapters
     }
+
+    /// Deliver a response back to a platform's channel.
+    /// Looks up the adapter by name and calls reply_to_message.
+    pub async fn send_to_platform(
+        &self, platform: &str, channel_id: &str, message_id: &str, content: &str,
+    ) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.reply_to_message(channel_id, message_id, content).await;
+            }
+        }
+        anyhow::bail!("No adapter registered for platform '{}'", platform)
+    }
+
+    /// Send typing indicator to a platform channel.
+    pub async fn start_typing(&self, platform: &str, channel_id: &str) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.start_typing(channel_id).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a thinking thread on the platform.
+    pub async fn create_thinking_thread(
+        &self, platform: &str, channel_id: &str, message_id: &str, title: &str,
+    ) -> anyhow::Result<String> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.create_thinking_thread(channel_id, message_id, title).await;
+            }
+        }
+        anyhow::bail!("No adapter for '{}'", platform)
+    }
+
+    /// Send content to a thinking thread.
+    pub async fn send_to_thread(
+        &self, platform: &str, thread_id: &str, content: &str,
+    ) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.send_to_thread(thread_id, content).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a thinking thread.
+    pub async fn delete_thread(
+        &self, platform: &str, thread_id: &str,
+    ) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.delete_thread(thread_id).await;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

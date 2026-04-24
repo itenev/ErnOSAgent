@@ -18,6 +18,7 @@ pub async fn build_chat_context(
     session_id: &str,
     agent_id: Option<&str>,
     images: Vec<String>,
+    platform: &str,
 ) -> ChatContext {
     let mut messages = Vec::new();
 
@@ -52,7 +53,7 @@ pub async fn build_chat_context(
         context_length: state.model_spec.context_length,
         session_id: session_id.to_string(),
         turn_count,
-        platform: "web".to_string(),
+        platform: platform.to_string(),
         timeline_count: memory_counts.0,
         lesson_count: memory_counts.1,
         procedure_count: memory_counts.2,

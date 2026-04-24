@@ -212,7 +212,7 @@ async fn handle_chat_message(
         .unwrap_or_default();
 
     let ctx = crate::web::ws_context::build_chat_context(
-        state, content, session_id, agent_id, images,
+        state, content, session_id, agent_id, images, "web",
     ).await;
     let mut messages = ctx.messages;
 
@@ -395,7 +395,7 @@ async fn handle_plan_decision(
 
         // Build context with the plan as the objective
         let ctx = crate::web::ws_context::build_chat_context(
-            state, &plan.title, session_id, None, Vec::new(),
+            state, &plan.title, session_id, None, Vec::new(), "web",
         ).await;
 
         stop_flag.store(false, std::sync::atomic::Ordering::Relaxed);

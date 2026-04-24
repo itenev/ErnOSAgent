@@ -39,7 +39,7 @@ impl TelegramAdapter {
     }
 
     /// Check if a chat ID is in the allowed list (empty = all chats).
-    fn is_allowed_chat(&self, chat_id: i64) -> bool {
+    pub fn is_allowed_chat(&self, chat_id: i64) -> bool {
         if self.config.allowed_chats.is_empty() {
             return true;
         }
@@ -47,7 +47,7 @@ impl TelegramAdapter {
     }
 
     /// Check if a user ID is in the admin list.
-    fn is_admin(&self, user_id: i64) -> bool {
+    pub fn is_admin(&self, user_id: i64) -> bool {
         self.config.admin_ids.contains(&user_id)
     }
 }
@@ -80,7 +80,7 @@ impl PlatformAdapter for TelegramAdapter {
             tracing::info!("Telegram adapter connected");
 
             let handler = Update::filter_message().endpoint(
-                move |bot: Bot, msg: teloxide::types::Message| {
+                move |_bot: Bot, msg: teloxide::types::Message| {
                     let tx = tx.clone();
                     let config = config.clone();
                     async move {
@@ -98,7 +98,7 @@ impl PlatformAdapter for TelegramAdapter {
                 _ = dispatcher.dispatch() => {}
                 _ = &mut shutdown_rx => {
                     tracing::info!("Telegram adapter shutting down");
-                    dispatcher.shutdown().await;
+                    // Dispatcher is dropped when select! exits, stopping dispatch
                 }
             }
 
@@ -147,7 +147,7 @@ impl PlatformAdapter for TelegramAdapter {
         for (i, chunk) in chunks.iter().enumerate() {
             let mut req = bot.send_message(ChatId(chat_id), chunk);
             if i == 0 {
-                req = req.reply_to_message_id(teloxide::types::MessageId(msg_id));
+                req = req.reply_parameters(teloxide::types::ReplyParameters::new(teloxide::types::MessageId(msg_id)));
             }
             req.await.context("Failed to send Telegram reply")?;
         }

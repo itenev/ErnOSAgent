@@ -94,6 +94,20 @@ pub async fn factory_reset(State(state): State<AppState>) -> impl IntoResponse {
     let _ = std::fs::remove_file("data/observer_history.json");
     let _ = std::fs::remove_file("data/sleep_history.json");
 
+    // Restore default prompts from prompts/ (factory defaults) → data/prompts/ (runtime)
+    // The user's identity gets re-customized via the onboarding flow after reset.
+    let defaults_dir = std::path::Path::new("prompts");
+    let runtime_dir = std::path::Path::new("data/prompts");
+    let _ = std::fs::create_dir_all(runtime_dir);
+    for name in &["core.md", "identity.md", "observer.md"] {
+        let src = defaults_dir.join(name);
+        let dst = runtime_dir.join(name);
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => tracing::info!(file = %name, "Restored default prompt"),
+            Err(e) => tracing::warn!(file = %name, error = %e, "Failed to restore default prompt"),
+        }
+    }
+
     tracing::info!("Factory reset complete — all data wiped (including onboarding)");
     Json(serde_json::json!({ "ok": true, "message": "Factory reset complete. All data cleared." }))
 }

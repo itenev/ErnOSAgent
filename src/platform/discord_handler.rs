@@ -40,6 +40,15 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
+        tracing::info!(
+            author = %msg.author.name,
+            author_bot = msg.author.bot,
+            channel = %msg.channel_id,
+            content_len = msg.content.len(),
+            listen_channels = ?self.config.listen_channels,
+            "Discord message event fired"
+        );
+
         // Ignore messages from bots (including self)
         if msg.author.bot {
             return;
@@ -47,6 +56,11 @@ impl EventHandler for Handler {
 
         // Channel filtering
         if !self.is_allowed_channel(msg.channel_id.get()) {
+            tracing::warn!(
+                channel = %msg.channel_id,
+                listen_channels = ?self.config.listen_channels,
+                "Message rejected by channel filter"
+            );
             return;
         }
 

@@ -233,6 +233,24 @@ pub fn layer2_tools() -> serde_json::Value {
     ])
 }
 
+/// Build the restricted tool schema for non-admin platform users.
+/// Read-only tools only — no shell, no file writes, no system internals.
+/// Per governance: safe tier = codebase introspection + web + memory reads.
+pub fn platform_safe_tools() -> serde_json::Value {
+    serde_json::json!([
+        web_search_tool_schema(),
+        file_read_tool_schema(),
+        codebase_search_tool_schema(),
+        timeline_tool_schema(),
+        lessons_tool_schema(),
+        scratchpad_tool_schema(),
+        memory_tool_schema(),
+        browser_tool_schema(),
+        create_artifact_tool_schema(),
+        generate_image_tool_schema(),
+    ])
+}
+
 // Tool schema definitions extracted to schema_definitions.rs for governance compliance.
 use crate::tools::schema_definitions::*;
 use crate::tools::schema_definitions_ext::*;
@@ -297,5 +315,30 @@ mod tests {
         assert!(arr.iter().any(|t| t["function"]["name"] == "codebase_edit"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "system_recompile"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "checkpoint"));
+    }
+
+    #[test]
+    fn test_platform_safe_tools() {
+        let tools = platform_safe_tools();
+        let arr = tools.as_array().unwrap();
+        assert_eq!(arr.len(), 10, "Safe tier should have exactly 10 tools");
+
+        // Must include read-only tools
+        assert!(arr.iter().any(|t| t["function"]["name"] == "web_search"));
+        assert!(arr.iter().any(|t| t["function"]["name"] == "file_read"));
+        assert!(arr.iter().any(|t| t["function"]["name"] == "codebase_search"));
+        assert!(arr.iter().any(|t| t["function"]["name"] == "timeline"));
+        assert!(arr.iter().any(|t| t["function"]["name"] == "memory"));
+
+        // Must NOT include destructive tools
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "run_bash_command"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "file_write"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "codebase_edit"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "system_recompile"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "start_react_system"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "spawn_sub_agent"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "system_logs"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "steering"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "learning"));
     }
 }

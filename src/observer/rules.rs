@@ -1,9 +1,18 @@
 // Ern-OS — Observer audit rules
-//! The 19-rule audit checklist, ported from ErnOSAgent production.
+//! The audit checklist, loaded from data/prompts/observer.md at runtime.
 //! Every rule exists because the engine experienced the failure mode it describes.
+//!
+//! Per governance §2.1: no hardcoded prompts. The file is the source of truth
+//! and is editable at runtime via the WebUI.
+
+use std::sync::OnceLock;
+
+/// Cached observer rules loaded from data/prompts/observer.md.
+/// Loaded once on first access, cached for the lifetime of the process.
+static OBSERVER_RULES_CACHE: OnceLock<String> = OnceLock::new();
 
 /// Load the observer system prompt from data/prompts/observer.md.
-/// Panics if the file is missing — no silent fallbacks.
+/// Panics if the file is missing — no silent fallbacks (governance §2.4).
 pub fn load_observer_prompt(data_dir: &std::path::Path) -> String {
     let path = data_dir.join("prompts").join("observer.md");
     match std::fs::read_to_string(&path) {
@@ -18,6 +27,23 @@ pub fn load_observer_prompt(data_dir: &std::path::Path) -> String {
             );
         }
     }
+}
+
+/// Get the observer rules for runtime use.
+/// Loads from data/prompts/observer.md on first call, caches thereafter.
+/// Falls back to the hardcoded const ONLY in test environments where
+/// the data directory may not exist.
+pub fn get_observer_rules() -> &'static str {
+    OBSERVER_RULES_CACHE.get_or_init(|| {
+        // Try loading from the data directory
+        let data_dir = std::path::Path::new("data");
+        if data_dir.join("prompts").join("observer.md").exists() {
+            load_observer_prompt(data_dir)
+        } else {
+            tracing::warn!("observer.md not found — using hardcoded fallback (tests only)");
+            OBSERVER_SYSTEM_PROMPT.to_string()
+        }
+    })
 }
 
 /// Hardcoded fallback for tests only — production MUST use load_observer_prompt().

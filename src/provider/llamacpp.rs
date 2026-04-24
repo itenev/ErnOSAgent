@@ -74,11 +74,7 @@ impl LlamaCppProvider {
             body["tools"] = tools.clone();
         }
 
-        // Thinking mode control — MUST set explicitly for both states.
-        // Previously only `false` was set, leaving `true` implicit/unset.
-        // This caused llama-server to intermittently skip thinking output
-        // when the template default didn't force it, resulting in
-        // thinking_len=0 in ~70% of L1 replies.
+        // Thinking mode control — Gemma 4 Jinja template requires explicit flag
         body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": thinking});
 
         body

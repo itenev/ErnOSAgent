@@ -61,6 +61,32 @@ pub trait PlatformAdapter: Send + Sync {
         self.send_message(channel_id, content).await
     }
 
+    /// Send a typing indicator to a channel. Returns immediately.
+    /// Discord typing lasts ~10 seconds; call repeatedly for longer inference.
+    async fn start_typing(&self, channel_id: &str) -> Result<()> {
+        let _ = channel_id;
+        Ok(())
+    }
+
+    /// Create a temporary thinking thread for CoT visibility.
+    /// Returns the thread/channel ID on success.
+    async fn create_thinking_thread(&self, channel_id: &str, message_id: &str, title: &str) -> Result<String> {
+        let _ = (channel_id, message_id, title);
+        anyhow::bail!("Thinking threads not supported on this platform")
+    }
+
+    /// Send a message to a thinking thread.
+    async fn send_to_thread(&self, thread_id: &str, content: &str) -> Result<()> {
+        let _ = (thread_id, content);
+        Ok(())
+    }
+
+    /// Delete a thinking thread after inference completes.
+    async fn delete_thread(&self, thread_id: &str) -> Result<()> {
+        let _ = thread_id;
+        Ok(())
+    }
+
     /// Take the receiver end of the incoming message channel.
     fn take_message_receiver(&mut self) -> Option<mpsc::Receiver<PlatformMessage>>;
 

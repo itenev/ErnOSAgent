@@ -168,8 +168,8 @@ fn build_observer_messages(
     tool_context: &str,
     user_message: &str,
 ) -> (Vec<Message>, String) {
-    // Load the observer rules
-    let observer_rules = rules::OBSERVER_SYSTEM_PROMPT;
+    // Load the observer rules from data/prompts/observer.md (cached)
+    let observer_rules = rules::get_observer_rules();
 
     let tool_display = if tool_context.is_empty() {
         "[No tools were executed in THIS TURN. \
