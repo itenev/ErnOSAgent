@@ -242,6 +242,9 @@ mod tests {
             what_worked: String::new(),
             what_went_wrong: "Response was too short".to_string(),
             how_to_fix: "Provide more detail and cite sources".to_string(),
+            active_topic: String::new(),
+            topic_transition: String::new(),
+            topic_context: String::new(),
         };
         ctx.add_rejection_feedback(&result);
         let last = ctx.messages.last().unwrap().text_content();

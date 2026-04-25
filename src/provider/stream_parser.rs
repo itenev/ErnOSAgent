@@ -83,6 +83,7 @@ pub async fn parse_sse_stream(
     let mut chunk_count: u64 = 0;
     let mut has_content = false; // track if any real content was generated
     let start = std::time::Instant::now();
+    let mut line_buffer = String::new(); // Buffer for partial lines split across HTTP chunks
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = match chunk_result {
@@ -97,8 +98,13 @@ pub async fn parse_sse_stream(
         chunk_count += 1;
         let text = String::from_utf8_lossy(&chunk);
 
-        for line in text.lines() {
-            let line = line.trim();
+        // Append to line buffer and process complete lines
+        line_buffer.push_str(&text);
+
+        // Process all complete lines (terminated by \n)
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line = line_buffer[..newline_pos].trim().to_string();
+            line_buffer = line_buffer[newline_pos + 1..].to_string();
 
             if line.is_empty() || line.starts_with(':') {
                 continue;
@@ -117,7 +123,7 @@ pub async fn parse_sse_stream(
                         chunks = chunk_count,
                         content_buffer_len = content_buffer.len(),
                         elapsed_ms = start.elapsed().as_millis() as u64,
-                        "SSE stream: [DONE] with NO content and NO tool calls — model produced nothing (premature EOS)"
+                        "SSE stream: [DONE] with NO content and NO tool calls"
                     );
                 }
                 tracing::debug!(

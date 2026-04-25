@@ -107,6 +107,7 @@ pub async fn audit_and_retry(
     tools: &serde_json::Value,
     user_query: &str,
     initial_text: &str,
+    session_id: &str,
 ) -> String {
     let max_retries = 2;
     let mut current_text = initial_text.to_string();
@@ -126,6 +127,8 @@ pub async fn audit_and_retry(
                     "category": &output.result.failure_category,
                 })).await;
                 training_capture::capture_approved(state, user_query, &current_text, output.result.confidence);
+                // Save conversation stack from observer classification
+                save_conversation_stack(state, session_id, &output.result);
                 return current_text;
             }
             Ok(output) => {
@@ -323,5 +326,29 @@ fn build_l1_tool_context(messages: &[Message]) -> String {
         String::new()
     } else {
         format!("L1 tools executed ({} calls):\n{}", entries.len(), entries.join("\n"))
+    }
+}
+
+/// Save the conversation stack from an observer audit result.
+/// Called after every successful audit — the observer generates topic classification
+/// as part of its standard verdict JSON (zero additional inference cost).
+pub fn save_conversation_stack(
+    state: &AppState,
+    session_id: &str,
+    result: &crate::observer::AuditResult,
+) {
+    if result.active_topic.is_empty() {
+        return;
+    }
+    let store = crate::prompt::conversation_stack::ConversationStackStore::new(
+        std::path::Path::new(&state.config.general.data_dir),
+    );
+    if let Err(e) = store.update_from_audit(
+        session_id,
+        &result.active_topic,
+        &result.topic_transition,
+        &result.topic_context,
+    ) {
+        tracing::warn!(error = %e, "Failed to save conversation stack");
     }
 }

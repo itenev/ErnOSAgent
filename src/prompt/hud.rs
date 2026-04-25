@@ -18,6 +18,7 @@ pub struct HudContext {
     pub golden_count: usize,
     pub rejection_count: usize,
     pub observer_enabled: bool,
+    pub conversation_stack: Option<crate::prompt::conversation_stack::ConversationStack>,
 }
 
 /// Build the dynamic HUD string from live system state.
@@ -25,7 +26,7 @@ pub fn build_hud(ctx: &HudContext) -> String {
     let utc_now = chrono::Utc::now();
     let local_now = chrono::Local::now();
 
-    format!(
+    let mut hud = format!(
         "# System State (Live)\n\n\
          ## Ground Truth — Current Date & Time\n\
          This is live data from the host system clock. It is the authoritative source for all temporal reasoning.\n\
@@ -63,7 +64,17 @@ pub fn build_hud(ctx: &HudContext) -> String {
         ctx.golden_count,
         ctx.rejection_count,
         if ctx.observer_enabled { "Enabled" } else { "Disabled" },
-    )
+    );
+
+    // Append conversation stack if available
+    if let Some(ref stack) = ctx.conversation_stack {
+        let section = stack.to_hud_section();
+        if !section.is_empty() {
+            hud.push_str(&section);
+        }
+    }
+
+    hud
 }
 
 #[cfg(test)]
@@ -86,6 +97,7 @@ mod tests {
             golden_count: 2,
             rejection_count: 0,
             observer_enabled: true,
+            conversation_stack: None,
         };
 
         let hud = build_hud(&ctx);
@@ -114,6 +126,7 @@ mod tests {
             golden_count: 0,
             rejection_count: 0,
             observer_enabled: false,
+            conversation_stack: None,
         };
 
         let hud = build_hud(&ctx);

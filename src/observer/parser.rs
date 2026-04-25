@@ -31,10 +31,16 @@ pub fn parse_verdict(response: &str) -> AuditResult {
             let what_went_wrong = v["what_went_wrong"].as_str().unwrap_or("").to_string();
             let how_to_fix = v["how_to_fix"].as_str().unwrap_or("").to_string();
 
+            // Conversation Stack — piggybacked on the observer audit
+            let active_topic = v["active_topic"].as_str().unwrap_or("").to_string();
+            let topic_transition = v["topic_transition"].as_str().unwrap_or("").to_string();
+            let topic_context = v["topic_context"].as_str().unwrap_or("").to_string();
+
             tracing::debug!(
                 verdict = %verdict,
                 confidence,
                 category = %failure_category,
+                active_topic = %active_topic,
                 "Observer verdict parsed"
             );
 
@@ -45,6 +51,9 @@ pub fn parse_verdict(response: &str) -> AuditResult {
                 what_worked,
                 what_went_wrong,
                 how_to_fix,
+                active_topic,
+                topic_transition,
+                topic_context,
             }
         }
         Err(e) => {

@@ -123,6 +123,8 @@ pub async fn run_react_loop(
                                 "confidence": output.result.confidence,
                                 "category": &output.result.failure_category,
                             })).await;
+                            // Save conversation stack from observer classification
+                            crate::web::ws_stream::save_conversation_stack(state, session_id, &output.result);
                         }
                         Err(e) => tracing::warn!(error = %e, "Observer failed — fail-open"),
                     }

@@ -13,6 +13,7 @@
 
 pub mod hud;
 pub mod tools;
+pub mod conversation_stack;
 
 use std::path::Path;
 

@@ -19,7 +19,6 @@ pub async fn execute_tool_with_state(
     );
 
     // Browser tool: screenshot images are returned separately for multimodal context.
-    #[cfg(feature = "desktop")]
     if tc.name == "browser" {
         let mut images = Vec::new();
         let mut result = match tc.name.as_str() {
@@ -213,7 +212,6 @@ async fn dispatch_codebase_edit(state: &AppState, args: &serde_json::Value) -> a
     }
 }
 
-#[cfg(feature = "desktop")]
 async fn dispatch_system_recompile() -> anyhow::Result<String> {
     crate::tools::compiler::run_recompile()
         .await
@@ -257,35 +255,26 @@ async fn dispatch_desktop_tool(
     name: &str,
     args: &serde_json::Value,
 ) -> anyhow::Result<String> {
-    #[cfg(feature = "desktop")]
-    {
-        match name {
-            "browse_url" => {
-                let url = args["url"].as_str().unwrap_or("");
-                crate::tools::browser_tool::browse_url(&state.browser, url).await
-            }
-            "screenshot_url" => {
-                let url = args["url"].as_str().unwrap_or("");
-                crate::tools::browser_tool::screenshot_url(&state.browser, url).await
-            }
-            "browser" => {
-                crate::tools::browser_tool::execute_action(&state.browser, args).await
-            }
-            "generate_image" => crate::tools::image_gen_tool::execute(args).await,
-            "system_recompile" => dispatch_system_recompile().await,
-            _ => Ok(format!("Unknown desktop tool: {}", name)),
+    match name {
+        "browse_url" => {
+            let url = args["url"].as_str().unwrap_or("");
+            crate::tools::browser_tool::browse_url(&state.browser, url).await
         }
-    }
-    #[cfg(not(feature = "desktop"))]
-    {
-        let _ = (state, args);
-        Ok(format!("{} requires the desktop engine. Not available on mobile.", name))
+        "screenshot_url" => {
+            let url = args["url"].as_str().unwrap_or("");
+            crate::tools::browser_tool::screenshot_url(&state.browser, url).await
+        }
+        "browser" => {
+            crate::tools::browser_tool::execute_action(&state.browser, args).await
+        }
+        "generate_image" => crate::tools::image_gen_tool::execute(args).await,
+        "system_recompile" => dispatch_system_recompile().await,
+        _ => Ok(format!("Unknown tool: {}", name)),
     }
 }
 
 /// Save a viewport screenshot to disk and push its data URI into images vec
 /// for proper multimodal tool results (image_url content blocks, not inline base64 text).
-#[cfg(feature = "desktop")]
 async fn maybe_auto_screenshot_to_images(
     state: &AppState,
     args: &serde_json::Value,

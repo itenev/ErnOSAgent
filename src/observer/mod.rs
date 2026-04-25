@@ -58,6 +58,16 @@ pub struct AuditResult {
 
     #[serde(default)]
     pub how_to_fix: String,
+
+    // Conversation Stack — piggybacked on observer audit (zero additional inference)
+    #[serde(default)]
+    pub active_topic: String,
+
+    #[serde(default)]
+    pub topic_transition: String,
+
+    #[serde(default)]
+    pub topic_context: String,
 }
 
 impl AuditResult {
@@ -70,6 +80,9 @@ impl AuditResult {
             what_worked: String::new(),
             what_went_wrong: format!("Observer unavailable: {}", error),
             how_to_fix: String::new(),
+            active_topic: String::new(),
+            topic_transition: String::new(),
+            topic_context: String::new(),
         }
     }
 
@@ -87,6 +100,9 @@ impl AuditResult {
             what_worked: String::new(),
             what_went_wrong: format!("Failed to parse observer verdict: {}", error),
             how_to_fix: "Observer returned malformed JSON — response passed through.".to_string(),
+            active_topic: String::new(),
+            topic_transition: String::new(),
+            topic_context: String::new(),
         }
     }
 }
@@ -355,6 +371,9 @@ mod tests {
             what_worked: "Structure was clear".to_string(),
             what_went_wrong: "Claimed search without evidence".to_string(),
             how_to_fix: "Execute web_search first".to_string(),
+            active_topic: String::new(),
+            topic_transition: String::new(),
+            topic_context: String::new(),
         };
 
         let feedback = format_rejection_feedback(&result);

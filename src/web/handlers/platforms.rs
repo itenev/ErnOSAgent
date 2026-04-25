@@ -257,7 +257,7 @@ pub async fn platform_ingest(
 
             // ── Observer audit (same as WebUI) ──
             let audited_text = platform_observer_audit(
-                &state, provider, &mut messages, &tools, &msg.content, &text,
+                &state, provider, &mut messages, &tools, &msg.content, &text, &session_id,
             ).await;
 
             // Ingest assistant turn into session + timeline
@@ -313,6 +313,7 @@ async fn platform_observer_audit(
     tools: &serde_json::Value,
     user_query: &str,
     initial_text: &str,
+    session_id: &str,
 ) -> String {
     if !state.config.observer.enabled || initial_text.is_empty() {
         return initial_text.to_string();
@@ -328,6 +329,7 @@ async fn platform_observer_audit(
         ).await {
             Ok(output) if output.result.verdict.is_allowed() => {
                 crate::web::training_capture::capture_approved(state, user_query, &current_text, output.result.confidence);
+                crate::web::ws_stream::save_conversation_stack(state, session_id, &output.result);
                 return current_text;
             }
             Ok(output) => {
@@ -421,7 +423,7 @@ async fn run_platform_tool_chain(
             Ok(crate::inference::fast_reply::FastReplyResult::Reply { text, .. }) => {
                 // Audit the final reply
                 let audited = platform_observer_audit(
-                    state, provider, messages, tools, user_query, &text,
+                    state, provider, messages, tools, user_query, &text, session_id,
                 ).await;
                 return audited;
             }
@@ -486,7 +488,7 @@ async fn run_platform_react(
             Ok(crate::inference::fast_reply::FastReplyResult::Reply { text, .. }) => {
                 // Model replied without using reply_request — treat as final
                 let audited = platform_observer_audit(
-                    state, provider, &mut messages, &tools, user_query, &text,
+                    state, provider, &mut messages, &tools, user_query, &text, session_id,
                 ).await;
                 return audited;
             }
@@ -496,7 +498,7 @@ async fn run_platform_react(
                 // Check for reply_request (loop terminator)
                 if let Some(reply_text) = crate::tools::schema::extract_reply_text(&tc) {
                     let audited = platform_observer_audit(
-                        state, provider, &mut messages, &tools, user_query, &reply_text,
+                        state, provider, &mut messages, &tools, user_query, &reply_text, session_id,
                     ).await;
                     crate::web::ws_learning::ingest_assistant_turn(state, &audited, session_id).await;
                     return audited;

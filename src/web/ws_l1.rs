@@ -25,7 +25,7 @@ pub async fn deliver_reply(
     if let Some(ref t) = thinking {
         tracing::debug!(len = t.len(), "Thinking captured for audit");
     }
-    let approved_text = audit_and_retry(state, provider, sender, messages, tools, user_query, text).await;
+    let approved_text = audit_and_retry(state, provider, sender, messages, tools, user_query, text, session_id).await;
     send_ws(sender, "text_delta", &serde_json::json!({"content": &approved_text})).await;
     ingest_assistant_turn(state, &approved_text, session_id).await;
     spawn_insight_extraction(state, user_query, &approved_text);

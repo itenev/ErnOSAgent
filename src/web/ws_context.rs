@@ -47,6 +47,15 @@ pub async fn build_chat_context(
     let golden_count = state.golden_buffer.read().await.count();
     let rejection_count = state.rejection_buffer.read().await.count();
 
+    // ── Load conversation stack (generated retroactively by observer audit) ──
+    let conversation_stack = {
+        let stack_store = crate::prompt::conversation_stack::ConversationStackStore::new(
+            std::path::Path::new(&state.config.general.data_dir),
+        );
+        let stack = stack_store.load(session_id);
+        if stack.active_topic.is_empty() { None } else { Some(stack) }
+    };
+
     let hud = crate::prompt::hud::build_hud(&crate::prompt::hud::HudContext {
         model_name: state.model_spec.name.clone(),
         provider: state.config.general.active_provider.clone(),
@@ -61,6 +70,7 @@ pub async fn build_chat_context(
         golden_count,
         rejection_count,
         observer_enabled: state.config.observer.enabled,
+        conversation_stack,
     });
 
     let system_prompt = crate::prompt::assemble(&core_prompt, &identity_prompt, &memory_context, &hud);
