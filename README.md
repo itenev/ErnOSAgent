@@ -12,14 +12,14 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" />
-  <img src="https://img.shields.io/badge/tests-454%20passing-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/tests-479%20passing-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/warnings-0-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
 </p>
 
 ---
 
-Ern-OS is a high-performance AI agent engine that runs entirely on your hardware. No cloud. No telemetry. No API keys required. Point it at any GGUF model via `llama-server`, and you get a full agentic system: a dual-layer inference engine with ReAct reasoning, a 29-tool executor, a 7-tier persistent memory system, an observer audit pipeline, autonomous learning, and a 12-tab WebUI dashboard — all compiled into a single Rust binary.
+Ern-OS is a high-performance AI agent engine that runs entirely on your hardware. No cloud. No telemetry. No API keys required. Point it at any GGUF model via `llama-server`, and you get a full agentic system: a dual-layer inference engine with ReAct reasoning, a 31-tool executor, a 7-tier persistent memory system, an observer audit pipeline, autonomous learning, and a 12-tab WebUI dashboard — all compiled into a single Rust binary.
 
 Created by [@mettamazza](https://github.com/mettamazza)
 
@@ -62,14 +62,14 @@ User ──→ WebUI (localhost:3000)
     │         Dual-Layer Inference Engine      │
     │                                          │
     │  Layer 1 (L1): Fast single-shot reply    │
-    │  ─ 20 tools, streaming, sub-second       │
+    │  ─ 22 tools, streaming, sub-second       │
     │                                          │
     │  Layer 2 (L2): ReAct reasoning loop      │
-    │  ─ 27 tools, multi-turn, autonomous      │
+    │  ─ 29 tools, multi-turn, autonomous      │
     │  ─ Model-driven turn management          │
     │  ─ Observer audit on every reply          │
     ├──────────────────────────────────────────┤
-    │  29-Tool Executor                        │
+    │  31-Tool Executor                        │
     │  shell · web · files · browser · memory  │
     │  sub-agents · artifacts · codebase edit  │
     │  image gen · SAE · steering · learning   │
@@ -90,7 +90,7 @@ User ──→ WebUI (localhost:3000)
 
 ### Dual-Layer Inference
 
-**Layer 1** handles straightforward requests — the model gets a single inference call with 20 tools (including memory, search, files, browser, planning, verification, and escalation). If the task requires multi-step reasoning, it escalates to Layer 2.
+**Layer 1** handles straightforward requests — the model gets a single inference call with 22 tools (including memory, search, files, browser, planning, verification, session recall, introspection, and escalation). If the task requires multi-step reasoning, it escalates to Layer 2.
 
 **Layer 2** runs a full ReAct loop: the model reasons, calls tools, observes results, and continues until it decides it's done. Turn management is model-driven — the model requests extensions when it needs more turns. An Observer audits every reply for quality, hallucination, and completeness before it reaches the user.
 
@@ -104,7 +104,7 @@ Ern-OS doesn't care what model you run. The `Provider` trait abstracts all infer
 
 ## Tools
 
-29 native tools, all executing locally:
+31 native tools, all executing locally:
 
 | Tool | What It Does |
 |------|-------------|
@@ -129,6 +129,8 @@ Ern-OS doesn't care what model you run. The `Provider` trait abstracts all infer
 | `checkpoint` | Create named restore points during codebase edits |
 | `plan_and_execute` | Decompose a complex objective into a DAG of sub-tasks and execute via sub-agents |
 | `verify_code` | Run the verification pipeline (compile → test → browser) to validate code changes |
+| `session_recall` | Search, browse, and summarize past chat sessions |
+| `introspect` | Inspect reasoning logs, agent activity, scheduler, observer results, and system health |
 
 ## Memory System
 
@@ -224,13 +226,13 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 | Metric | Value |
 |--------|-------|
 | Language | Rust (Edition 2021) |
-| Source files | 173 `.rs` files |
-| Lines of code | ~26,000 |
-| Tests | 454 passing (378 lib + 76 e2e) |
+| Source files | 183 `.rs` files |
+| Lines of code | ~29,000 |
+| Tests | 479 passing (403 lib + 76 e2e) |
 | Test failures | 0 |
 | Compiler warnings | 0 |
-| Tools | 29 (20 in L1, 27 in L2) |
-| API endpoints | 80 REST + 3 WebSocket (chat, voice, video) |
+| Tools | 31 unique (22 in L1, 29 in L2) |
+| API endpoints | 95 REST + 3 WebSocket (chat, voice, video) |
 | Dashboard tabs | 12 |
 | Memory tiers | 7 |
 | Providers | 3 (llamacpp, ollama, openai-compatible) |

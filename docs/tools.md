@@ -1,8 +1,8 @@
 # Tools
 
-Ern-OS provides 29 tools across two layers. Tool schemas are defined in `src/tools/schema.rs` and `src/tools/schema_definitions.rs`. Execution is handled by `src/web/tool_dispatch.rs` (and `src/web/dispatch_planning.rs` for DAG/verification tools) which routes all tool calls through `AppState`.
+Ern-OS provides 31 tools across two layers. Tool schemas are defined in `src/tools/schema.rs` and `src/tools/schema_definitions.rs`. Execution is handled by `src/web/tool_dispatch.rs` (and `src/web/dispatch_planning.rs` for DAG/verification tools) which routes all tool calls through `AppState`.
 
-## Layer 1 Tools (20 tools)
+## Layer 1 Tools (22 tools)
 
 Available during fast reply (Layer 1). Defined by `layer1_tools()`.
 
@@ -28,10 +28,12 @@ Available during fast reply (Layer 1). Defined by `layer1_tools()`.
 | `system_logs` | Read-only access to error logs and self-edit audit trail |
 | `plan_and_execute` | Decompose a complex objective into a DAG of sub-tasks and execute via sub-agents |
 | `verify_code` | Run the verification pipeline (compile → test → browser) to validate code changes |
+| `session_recall` | Search, browse, and summarize past chat sessions |
+| `introspect` | Inspect reasoning logs, agent activity, scheduler, observer results, and system health |
 
 Layer 1 decides whether to answer directly or escalate. If the task is simple, it responds immediately. If complex, it calls `start_react_system` to enter Layer 2.
 
-## Layer 2 Tools (27 tools)
+## Layer 2 Tools (29 tools)
 
 Available during the ReAct loop (Layer 2). Defined by `layer2_tools()`. Includes these tools (note: not all L1 tools carry over — L2 has its own curated set):
 
@@ -98,6 +100,13 @@ All memory tools route through `tool_dispatch.rs` which accesses `AppState.memor
 |------|------|-------------|
 | `plan_and_execute` | `dispatch_planning.rs` | Decompose objective into task DAG and execute via sub-agents (recursion-guarded) |
 | `verify_code` | `dispatch_planning.rs` | Run verification pipeline: compile → test → optional browser check |
+
+### Session & Introspection Tools
+
+| Tool | File | Description |
+|------|------|-------------|
+| `session_recall` | `tool_dispatch.rs` | Search, browse, summarize, and extract topics from past chat sessions |
+| `introspect` | `tool_dispatch.rs` | Inspect reasoning logs, agent activity, scheduler status, observer audits, system health, and available tools |
 
 ## Tool Call Flow
 

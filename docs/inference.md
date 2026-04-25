@@ -18,7 +18,7 @@ The inference engine uses a **dual-layer architecture** defined across `src/infe
 The default path for simple interactions. The provider receives:
 - System prompt with memory context (including learned skills)
 - User message
-- `layer1_tools` schema (20 tools: `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs`)
+- `layer1_tools` schema (22 tools: `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs`, `session_recall`, `introspect`)
 
 **Outcomes** (determined by `consume_silently()` in `ws.rs`):
 
@@ -54,27 +54,31 @@ Each call to `run_iteration()` returns one of:
 
 | Variant | Description |
 |---------|-------------|
-| `Reply(text)` | Model called `reply_request` tool — final answer |
+| `Reply(text, thinking)` | Model called `reply_request` tool — final answer |
 | `Refuse(reason)` | Model called `refuse_request` tool — explicit refusal |
-| `ToolCall(tc)` | Model wants to execute a tool |
-| `ImplicitReply(text)` | Model responded with plain text (no tool call) |
+| `ToolCall(tc)` | Model wants to execute a single tool |
+| `ToolCalls(vec)` | Model wants to execute multiple tools in parallel |
+| `ExtendTurns { additional, progress, remaining_work }` | Model requests more reasoning turns |
+| `ImplicitReply(text, thinking)` | Model responded with plain text (no tool call) |
 
 ### Loop Flow
 
 ```
-for iteration in 0..20 {
+loop {
     match run_iteration(provider, &ctx, thinking) {
-        Reply(text)     → observer audit → deliver → return
+        Reply(text, _)  → observer audit → deliver → return
         Refuse(reason)  → deliver refusal → return
         ToolCall(tc)    → execute → ctx.add_tool_result() → continue
+        ToolCalls(tcs)  → execute all in parallel → add results → continue
+        ExtendTurns     → grant additional turns → continue
         ImplicitReply   → deliver → return
         Error           → report → return
     }
 }
-// Exceeded 20 iterations → error
+// Loop is unbounded — turn management is model-driven via extend_turns
 ```
 
-The loop is capped at 20 iterations. The only exit via agentic path is `reply_request` or `refuse_request` tool calls.
+The loop has no fixed iteration cap. Turn management is model-driven: the model uses `extend_turns` to request additional reasoning cycles when needed. The only exits are `reply_request`, `refuse_request`, implicit text reply, or a user stop signal.
 
 ## Observer Audit
 
@@ -86,20 +90,30 @@ Defined in `src/observer/`. Runs after every response in both layers.
 2. Provider returns a JSON verdict
 3. `parser::parse_verdict(text)` extracts the verdict from raw text (handles embedded JSON, markdown blocks, garbage)
 
-### Verdict Structure
+### Verdict / AuditResult Structure
 
 ```rust
-pub struct Verdict {
-    pub approved: bool,
-    pub score: f64,
-    pub reason: Option<String>,
-    pub guidance: Option<String>,
+pub enum Verdict {
+    Allowed,
+    Blocked,
+}
+
+pub struct AuditResult {
+    pub verdict: Verdict,
+    pub confidence: f32,
+    pub failure_category: String,
+    pub what_worked: String,
+    pub what_went_wrong: String,
+    pub how_to_fix: String,
+    pub active_topic: String,
+    pub topic_transition: String,
+    pub topic_context: String,
 }
 ```
 
 ### Fail-Open Policy
 
-If the observer response is not valid JSON, the verdict defaults to `approved: true` with `score: 5.0`. This prevents the observer from blocking the pipeline on parse failures.
+If the observer response is not valid JSON, the verdict defaults to `Verdict::Allowed` with `confidence: 5.0`. This prevents the observer from blocking the pipeline on parse failures.
 
 ### Training Signal Capture
 
@@ -131,7 +145,7 @@ Layer 1 and Layer 2 use different tool sets, defined in `src/tools/schema.rs`:
 
 | Function | Tools Included |
 |----------|---------------|
-| `layer1_tools()` | `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs` (20 tools) |
-| `layer2_tools()` | `reply_request`, `refuse_request`, `extend_turns`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `memory`, `scratchpad`, `synaptic`, `timeline`, `lessons`, `self_skills`, `learning`, `steering`, `interpretability`, `codebase_search`, `file_read`, `file_write`, `browser`, `create_artifact`, `generate_image`, `spawn_sub_agent`, `codebase_edit`, `system_recompile`, `checkpoint`, `system_logs` (27 tools) |
+| `layer1_tools()` | `start_react_system`, `propose_plan`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `file_read`, `file_write`, `codebase_search`, `browser`, `memory`, `scratchpad`, `timeline`, `lessons`, `create_artifact`, `generate_image`, `steering`, `interpretability`, `learning`, `system_logs`, `session_recall`, `introspect` (22 tools) |
+| `layer2_tools()` | `reply_request`, `refuse_request`, `extend_turns`, `plan_and_execute`, `verify_code`, `run_bash_command`, `web_search`, `memory`, `scratchpad`, `synaptic`, `timeline`, `lessons`, `self_skills`, `learning`, `steering`, `interpretability`, `codebase_search`, `file_read`, `file_write`, `browser`, `create_artifact`, `generate_image`, `spawn_sub_agent`, `codebase_edit`, `system_recompile`, `checkpoint`, `system_logs`, `session_recall`, `introspect` (29 tools) |
 
 Tool calls from the model are dispatched by `tool_dispatch.rs` and `dispatch_planning.rs` (for state-dependent tools) or `executor.rs` (for stateless tools like shell commands).

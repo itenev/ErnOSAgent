@@ -7,17 +7,13 @@ license = "MIT"
 default-run = "ern-os"
 
 [features]
-default = ["file-extract", "desktop"]
+default = ["file-extract"]
 # GPU acceleration for Candle ML operations — opt-in per hardware:
 #   cargo build --release --features metal    (macOS — Apple Silicon)
 #   cargo build --release --features cuda     (Linux/Windows — NVIDIA)
 #   cargo build --release                     (any platform — CPU)
 metal = ["candle-core/metal"]
 cuda = ["candle-core/cuda"]
-# Desktop build — native file system tools, verification pipeline, Tauri integration
-desktop = []
-# Android build — reduced tool surface, mobile-optimized paths
-android = []
 # Universal file ingestion — PDF, Office, spreadsheets, archives, databases
 file-extract = ["dep:lopdf", "dep:calamine", "dep:csv", "dep:zip", "dep:rusqlite", "dep:quick-xml"]
 

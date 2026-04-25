@@ -80,7 +80,7 @@
 | 4.4 | Final reply | ReAct loop terminates with `reply_request`, synthesized answer appears | ☐ |
 | 4.5 | Iteration logs | Terminal shows iteration numbers (0, 1, 2...) for each ReAct cycle | ☐ |
 | 4.6 | `Find all TODO comments in the codebase, count them per file, and write a summary to data/todo_report.txt` | Multi-tool chain: grep → count → file_write → reply | ☐ |
-| 4.7 | Max iterations | Verify ReAct doesn't exceed 20 iterations (check terminal logs) | ☐ |
+| 4.7 | Max iterations | Verify ReAct doesn't exceed configured iteration limit (check terminal logs) | ☐ |
 
 ---
 
@@ -182,7 +182,7 @@
 
 ---
 
-## 8. Tool Dispatch — All 29 Tools
+## 8. Tool Dispatch — All 31 Tools
 
 ### 8.1 Execution Tools
 
@@ -324,7 +324,7 @@ Use `curl` from a terminal while Ern-OS is running.
 | 10.9 | Memory procedures | `curl -s localhost:3000/api/memory/procedures \| python3 -m json.tool` | Procedures array | ☐ |
 | 10.10 | Memory scratchpad | `curl -s localhost:3000/api/memory/scratchpad \| python3 -m json.tool` | Scratchpad entries | ☐ |
 | 10.11 | Memory synaptic | `curl -s localhost:3000/api/memory/synaptic \| python3 -m json.tool` | Synaptic graph data | ☐ |
-| 10.12 | Tools catalog | `curl -s localhost:3000/api/tools \| python3 -m json.tool` | Array of 29 tool schemas | ☐ |
+| 10.12 | Tools catalog | `curl -s localhost:3000/api/tools \| python3 -m json.tool` | Array of 31 tool schemas | ☐ |
 | 10.13 | Training data | `curl -s localhost:3000/api/training \| python3 -m json.tool` | Golden/rejection buffer counts | ☐ |
 | 10.14 | Interp features | `curl -s localhost:3000/api/interpretability/features \| python3 -m json.tool` | Feature data or empty list | ☐ |
 | 10.15 | Interp snapshots | `curl -s localhost:3000/api/interpretability/snapshots \| python3 -m json.tool` | Snapshot list | ☐ |

@@ -23,9 +23,9 @@ cargo test --lib
 
 | Category | Count | Location |
 |----------|-------|----------|
-| Unit (inline) | 378 | `src/**/*.rs` — `#[cfg(test)] mod tests` blocks |
+| Unit (inline) | 403 | `src/**/*.rs` — `#[cfg(test)] mod tests` blocks |
 | E2E (integration) | 76 | `tests/e2e_tests.rs` |
-| **Total** | **454** | |
+| **Total** | **479** | |
 | **Failures** | **0** | |
 
 ## Unit Test Distribution

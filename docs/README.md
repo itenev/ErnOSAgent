@@ -40,12 +40,12 @@ User → WebUI (localhost:3000)
          ↓ WebSocket (chat / voice / video)
     ┌────────────────────────────────┐
     │  Dual-Layer Inference Engine   │
-    │  Layer 1: Fast Reply (20 tools)│
-    │  Layer 2: ReAct Loop (27 tools)│
+    │  Layer 1: Fast Reply (22 tools)│
+    │  Layer 2: ReAct Loop (29 tools)│
     ├────────────────────────────────┤
     │  Observer Audit + Insights     │
     ├────────────────────────────────┤
-    │  29-Tool Executor (shell, web, │
+    │  31-Tool Executor (shell, web, │
     │  memory, browser, image, sub-  │
     │  agent, artifacts, files, SAE) │
     ├────────────────────────────────┤
@@ -82,13 +82,13 @@ User → WebUI (localhost:3000)
 | Metric | Value |
 |--------|-------|
 | Language | Rust (Edition 2021) |
-| Source files | 173 `.rs` files |
-| Lines of code | ~26,000 (src only) |
-| Tests | 454 passing (378 lib + 76 e2e) |
+| Source files | 183 `.rs` files |
+| Lines of code | ~29,000 (src only) |
+| Tests | 479 passing (403 lib + 76 e2e) |
 | Test failures | 0 |
 | Compiler warnings | 0 |
-| Modules | 21 top-level |
-| Tools | 29 (20 in L1, 27 in L2) |
-| API endpoints | 80 REST routes + 3 WebSocket (chat, voice, video) |
+| Modules | 19 top-level |
+| Tools | 31 unique (22 in L1, 29 in L2) |
+| API endpoints | 95 REST routes + 3 WebSocket (chat, voice, video) |
 | Dashboard views | 12 tabs |
 | Auto-starting services | 4 (WebUI, Kokoro TTS, Flux Image, code-server) |

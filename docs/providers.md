@@ -53,17 +53,14 @@ pub enum StreamEvent {
 ```rust
 pub struct Message {
     pub role: String,
-    pub content: Vec<ContentPart>,
+    pub content: serde_json::Value,
+    pub images: Vec<String>,
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    pub tool_call_id: Option<String>,
 }
 ```
 
-Where `ContentPart` is:
-```rust
-pub enum ContentPart {
-    Text(String),
-    ImageUrl(String),
-}
-```
+The `content` field is a `serde_json::Value` to support both simple string content and OpenAI-compatible multipart arrays (text + image_url objects).
 
 Factory methods:
 - `Message::text(role, content)` — text-only message
@@ -128,6 +125,8 @@ pub struct ModelSpec {
     pub name: String,
     pub context_length: usize,
     pub supports_vision: bool,
+    pub supports_video: bool,
+    pub supports_audio: bool,
     pub supports_tool_calling: bool,
     pub supports_thinking: bool,
     pub embedding_dimensions: usize,

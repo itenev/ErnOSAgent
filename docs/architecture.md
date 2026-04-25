@@ -8,13 +8,13 @@ Ern-OS is a **WebUI-centric** agent engine with autonomous learning. The WebUI i
 ┌─────────────────────────────────────────────────────┐
 │                   WebUI Hub (ws.rs)                  │
 │   WebSocket (/ws)  ·  Static Frontend (index.html)   │
-│   80 REST API endpoints · 12 Dashboard views         │
+│   95 REST API endpoints · 12 Dashboard views         │
 ├─────────────────────────────────────────────────────┤
 │                Internal Engine Services              │
 │                                                      │
 │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐  │
 │  │ Inference │ │ Observer │ │ Tools  │ │ Sessions │  │
-│  │  Engine   │ │  Audit   │ │29 Tools│ │ Manager  │  │
+│  │  Engine   │ │  Audit   │ │31 Tools│ │ Manager  │  │
 │  └──────────┘ └──────────┘ └────────┘ └──────────┘  │
 │                                                      │
 │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐  │
@@ -45,7 +45,7 @@ Ern-OS is a **WebUI-centric** agent engine with autonomous learning. The WebUI i
 
 ## Module Map
 
-All source lives under `src/`. 21 top-level modules:
+All source lives under `src/`. 19 top-level modules:
 
 | Module | Path | Purpose |
 |--------|------|---------|
@@ -59,13 +59,13 @@ All source lives under `src/`. 21 top-level modules:
 | `model` | `src/model/mod.rs` | ModelSpec struct (auto-derived from provider) |
 | `observer` | `src/observer/` | Response audit (mod.rs), insight extraction (insights.rs), rule system (rules.rs), parser (parser.rs), skill synthesis (skills.rs) |
 | `platform` | `src/platform/` | Platform adapter trait, registry, router — connects Discord/Telegram as WebSocket clients |
-| `prompt` | `src/prompt/mod.rs` | System prompt management, identity loading |
+| `prompt` | `src/prompt/` | System prompt assembly, identity loading, HUD builder (hud.rs), conversation stack tracker (conversation_stack.rs) |
 | `provider` | `src/provider/` | Provider trait + 3 implementations: llamacpp (with embed), ollama, openai_compat, stream_parser |
 | `scheduler` | `src/scheduler/` | Cron engine: job definitions (job.rs), persistent store (store.rs), 8 built-in system jobs |
 | `session` | `src/session/mod.rs` | JSON-backed session CRUD with pin, archive, fork, search, reactions |
 | `steering` | `src/steering/` | Activation steering vectors (vectors.rs), server interface (server.rs) |
-| `tools` | `src/tools/` | 29-tool registry: schema definitions + tool implementation files |
-| `web` | `src/web/` | Axum server (80 routes), WebSocket handler (chat + voice + video), 18 handler modules, state, static frontend |
+| `tools` | `src/tools/` | 31-tool registry: schema definitions + tool implementation files |
+| `web` | `src/web/` | Axum server (95 routes), WebSocket handler (chat + voice + video), 19 handler modules, state, static frontend |
 | `verification` | `src/verification/` | Compile → test → browser verification pipeline (compiler_check, browser, pipeline) |
 | `planning` | `src/planning/` | Task decomposition DAG (dag, planner, executor) |
 | `checkpoint` | `src/checkpoint/` | Atomic system-state snapshots and rollback (snapshot, restore) |
@@ -79,7 +79,7 @@ All source lives under `src/`. 21 top-level modules:
    └─ Includes: scratchpad (35%), lessons (25%), skills (15%),
       timeline (15%), knowledge graph (10%)
 4. Message ingested into Timeline memory
-5. Layer 1: Provider.chat() with layer1_tools (20 tools)
+5. Layer 1: Provider.chat() with layer1_tools (22 tools)
 6. Stream consumed via consume_silently()
    ├─ TextDelta → buffered (NOT sent to user yet)
    ├─ ToolCall "start_react_system" → escalate to Layer 2
@@ -121,7 +121,7 @@ pub struct AppState {
     pub platforms: Arc<RwLock<PlatformRegistry>>,
     pub mutable_config: Arc<RwLock<AppConfig>>,
     pub resume_message: Arc<RwLock<Option<String>>>,
-    pub sae: Arc<RwLock<Option<SaeState>>>,
+    pub sae: Arc<RwLock<Option<SparseAutoencoder>>>,
 }
 ```
 
@@ -165,7 +165,7 @@ The `spawn_sub_agent` tool creates an isolated ReAct loop with:
 
 When the model emits multiple `ToolCalls` in a single response, they are dispatched concurrently via `futures::join_all`. All results are collected and injected as tool messages before the next inference turn.
 
-## REST API (80 routes)
+## REST API (95 routes)
 
 Organized by handler module in `src/web/handlers/`:
 

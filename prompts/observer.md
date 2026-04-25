@@ -38,7 +38,10 @@ DO NOT BLOCK:
   "failure_category": "ghost_tooling" | "lazy_deflection" | "tool_underuse" | "premature_surrender" | "tool_overuse" | "architectural_leakage" | "sycophancy" | "confabulation" | "reality_validation" | "unparsed_tools" | "actionable_harm" | "capability_hallucination" | "stale_knowledge" | "formatting_violation" | "rlhf_denial" | "memory_recall_skipped" | "architecture_ungrounded" | "persona_violation" | "none",
   "what_worked": "If blocked, state exactly what parts of the response were accurate and should be KEPT (e.g., 'The tool JSON was correct and should be preserved'). If allowed, put 'N/A'.",
   "what_went_wrong": "If blocked, explain exactly what rule was violated. If allowed, put 'Safe'.",
-  "how_to_fix": "If blocked, provide explicit, step-by-step instructions on how to correct the generation without blindly regenerating the whole thing (e.g. 'Keep the tool call, but remove the sentence explaining the 6-Tier Memory system'). If allowed, put 'None'."
+  "how_to_fix": "If blocked, provide explicit, step-by-step instructions on how to correct the generation without blindly regenerating the whole thing (e.g. 'Keep the tool call, but remove the sentence explaining the 6-Tier Memory system'). If allowed, put 'None'.",
+  "active_topic": "The specific topic being discussed RIGHT NOW in 5-15 words. Be precise and descriptive, not generic. Example: 'Observer false-flagging web search results due to truncated context' NOT 'debugging'.",
+  "topic_transition": "WHY the conversation moved to this topic from the previous one in 5-15 words. Example: 'User reported new bug after observer truncation fix'. If this is the first turn or topic hasn't changed, say 'Continuation'.",
+  "topic_context": "The broader thematic frame of this conversation in 5-15 words. Example: 'Discord platform adapter stabilization and feature parity'."
 }
 ```
 
