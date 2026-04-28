@@ -38,7 +38,12 @@ pub fn extract(path: &str) -> Result<ExtractionResult> {
     let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     tracing::info!(path = %path, ext = %ext, size, "FileExtractor: extracting");
 
-    match ext.as_str() {
+    extract_by_extension(p, &ext)
+}
+
+/// Route extraction by file extension category.
+fn extract_by_extension(p: &Path, ext: &str) -> Result<ExtractionResult> {
+    match ext {
         // Documents
         "pdf" => documents::extract_pdf(p),
         "docx" => documents::extract_docx(p),
@@ -50,10 +55,9 @@ pub fn extract(path: &str) -> Result<ExtractionResult> {
         "ppt" => documents::extract_legacy_ppt(p),
         "html" | "htm" => documents::extract_html(p),
         "pages" => documents::extract_pages(p),
-
-        // Spreadsheets & Data
+        // Data
         "xlsx" | "xls" | "ods" => data::extract_spreadsheet(p),
-        "csv" | "tsv" => data::extract_csv(p, &ext),
+        "csv" | "tsv" => data::extract_csv(p, ext),
         "json" => data::extract_json(p),
         "jsonl" | "ndjson" => data::extract_jsonl(p),
         "yaml" | "yml" => data::extract_yaml(p),
@@ -61,34 +65,42 @@ pub fn extract(path: &str) -> Result<ExtractionResult> {
         "xml" => data::extract_xml(p),
         "ini" | "cfg" | "env" | "conf" => data::extract_ini(p),
         "sqlite" | "db" | "sqlite3" => data::extract_sqlite(p),
+        // Media & archives
+        _ => extract_media_or_text(p, ext),
+    }
+}
 
+/// Route media, archive, communication, and text-based files.
+fn extract_media_or_text(p: &Path, ext: &str) -> Result<ExtractionResult> {
+    match ext {
         // Images
         "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tiff" | "tif"
-        | "svg" | "ico" | "heic" | "heif" | "avif" => media::extract_image(p, &ext),
-
+        | "svg" | "ico" | "heic" | "heif" | "avif" => media::extract_image(p, ext),
         // Audio
         "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" | "opus" | "wma"
             => media::extract_audio(p),
-
         // Video
         "mp4" | "mov" | "avi" | "mkv" | "webm" | "flv" => media::extract_video(p),
-
         // Archives
         "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar"
-            => archives::extract_archive(p, &ext),
-
+            => archives::extract_archive(p, ext),
         // Communication
         "eml" | "msg" => communication::extract_email(p),
         "ics" => communication::extract_calendar(p),
         "vcf" => communication::extract_vcard(p),
-
-        // Log files
+        // Logs & certs
         "log" => text::extract_log(p),
-
-        // Certificates
         "pem" | "crt" | "key" | "cer" => text::extract_cert(p),
+        // Code & text
+        _ if is_code_or_text(ext) => text::extract_text_with_lang(p, ext),
+        // Binary fallback
+        _ => text::extract_binary_fallback(p, ext),
+    }
+}
 
-        // Code & markup
+/// Check if extension is a known code or text format.
+fn is_code_or_text(ext: &str) -> bool {
+    matches!(ext,
         "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "cc"
         | "h" | "hpp" | "rb" | "swift" | "kt" | "kts" | "cs" | "php" | "lua" | "r"
         | "scala" | "zig" | "nim" | "v" | "dart" | "ex" | "exs" | "erl" | "hs" | "ml"
@@ -97,16 +109,10 @@ pub fn extract(path: &str) -> Result<ExtractionResult> {
         | "sql" | "graphql" | "proto" | "thrift"
         | "tf" | "hcl" | "nix" | "dhall"
         | "md" | "mdx" | "rst" | "adoc" | "tex" | "org" | "txt" | "text"
-        | "dockerfile" | "containerfile" => text::extract_text_with_lang(p, &ext),
-
-        // Known config (text)
-        "makefile" | "justfile" | "rakefile" | "gemfile" | "procfile"
+        | "dockerfile" | "containerfile"
+        | "makefile" | "justfile" | "rakefile" | "gemfile" | "procfile"
         | "gitignore" | "dockerignore" | "editorconfig"
-            => text::extract_text_with_lang(p, &ext),
-
-        // Binary fallback
-        _ => text::extract_binary_fallback(p, &ext),
-    }
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════

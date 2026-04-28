@@ -120,6 +120,7 @@ impl SynapticGraph {
 
     pub fn node_count(&self) -> usize { self.nodes.len() }
     pub fn edge_count(&self) -> usize { self.edges.len() }
+    pub fn all_edges(&self) -> &[SynapticEdge] { &self.edges }
 
     fn persist(&self) -> Result<()> {
         if let Some(ref dir) = self.persist_dir {

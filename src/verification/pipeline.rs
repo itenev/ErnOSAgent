@@ -16,6 +16,7 @@ pub struct VerificationConfig {
     pub project_root: PathBuf,
     pub run_tests: bool,
     pub browser_url: Option<String>,
+    pub browser_actions: Vec<browser::BrowserAction>,
     pub max_fix_attempts: usize,
 }
 
@@ -25,6 +26,7 @@ impl Default for VerificationConfig {
             project_root: std::env::current_dir().unwrap_or_default(),
             run_tests: true,
             browser_url: None,
+            browser_actions: Vec::new(),
             max_fix_attempts: 3,
         }
     }
@@ -57,53 +59,22 @@ pub async fn run_verification(config: &VerificationConfig) -> Result<Verificatio
 
     if !build_result.success {
         tracing::warn!(errors = build_result.errors.len(), "Build failed");
-        return Ok(VerificationResult {
-            overall_pass: false,
-            build_result,
-            test_result: None,
-            browser_result: None,
-            stage_failed: Some(VerificationStage::Build),
-        });
+        return Ok(make_failure(build_result, None, None, VerificationStage::Build));
     }
 
-    let test_result = if config.run_tests {
-        let tr = compiler_check::check_tests(&config.project_root).await
-            .context("Test verification failed")?;
+    let test_result = run_test_stage(config, &build_result).await?;
+    if let Some(ref tr) = test_result {
         if !tr.success {
-            tracing::warn!(
-                failed = tr.test_summary.as_ref().map(|t| t.failed).unwrap_or(0),
-                "Tests failed"
-            );
-            return Ok(VerificationResult {
-                overall_pass: false,
-                build_result,
-                test_result: Some(tr),
-                browser_result: None,
-                stage_failed: Some(VerificationStage::Tests),
-            });
+            return Ok(make_failure(build_result, Some(tr.clone()), None, VerificationStage::Tests));
         }
-        Some(tr)
-    } else {
-        None
-    };
+    }
 
-    let browser_result = if let Some(ref url) = config.browser_url {
-        let br = browser::check_url(url, 5).await
-            .context("Browser verification failed")?;
+    let browser_result = run_browser_stage(config, &build_result, &test_result).await?;
+    if let Some(ref br) = browser_result {
         if !br.console_errors.is_empty() {
-            tracing::warn!(errors = br.console_errors.len(), "Browser errors detected");
-            return Ok(VerificationResult {
-                overall_pass: false,
-                build_result,
-                test_result,
-                browser_result: Some(br),
-                stage_failed: Some(VerificationStage::Browser),
-            });
+            return Ok(make_failure(build_result, test_result, Some(br.clone()), VerificationStage::Browser));
         }
-        Some(br)
-    } else {
-        None
-    };
+    }
 
     tracing::info!("Verification pipeline passed");
     Ok(VerificationResult {
@@ -113,6 +84,62 @@ pub async fn run_verification(config: &VerificationConfig) -> Result<Verificatio
         browser_result,
         stage_failed: None,
     })
+}
+
+/// Create a failure result for the given stage.
+fn make_failure(
+    build_result: CompileResult,
+    test_result: Option<CompileResult>,
+    browser_result: Option<BrowserCheckResult>,
+    stage: VerificationStage,
+) -> VerificationResult {
+    VerificationResult {
+        overall_pass: false,
+        build_result,
+        test_result,
+        browser_result,
+        stage_failed: Some(stage),
+    }
+}
+
+/// Run the test verification stage if configured.
+async fn run_test_stage(config: &VerificationConfig, _build: &CompileResult) -> Result<Option<CompileResult>> {
+    if !config.run_tests { return Ok(None); }
+    let tr = compiler_check::check_tests(&config.project_root).await
+        .context("Test verification failed")?;
+    if !tr.success {
+        tracing::warn!(failed = tr.test_summary.as_ref().map(|t| t.failed).unwrap_or(0), "Tests failed");
+    }
+    Ok(Some(tr))
+}
+
+/// Run the browser verification stage if a URL is configured.
+async fn run_browser_stage(
+    config: &VerificationConfig,
+    _build: &CompileResult,
+    _tests: &Option<CompileResult>,
+) -> Result<Option<BrowserCheckResult>> {
+    let Some(ref url) = config.browser_url else { return Ok(None); };
+
+    // If browser actions are specified, use the interactive pipeline
+    if !config.browser_actions.is_empty() {
+        let results = browser::run_browser_actions(url, config.browser_actions.clone()).await
+            .context("Browser action verification failed")?;
+        // Merge all results — return the first failure or the last success
+        let failed = results.iter().find(|r| !r.console_errors.is_empty());
+        if let Some(fail) = failed {
+            tracing::warn!(errors = fail.console_errors.len(), "Browser action errors");
+            return Ok(Some(fail.clone()));
+        }
+        return Ok(results.into_iter().last());
+    }
+
+    let br = browser::check_url(url, 5).await
+        .context("Browser verification failed")?;
+    if !br.console_errors.is_empty() {
+        tracing::warn!(errors = br.console_errors.len(), "Browser errors detected");
+    }
+    Ok(Some(br))
 }
 
 /// Format verification failures into a prompt for the coding agent to fix.

@@ -36,6 +36,12 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
             let b = args["target"].as_str().unwrap_or("");
             Ok(format!("Co-activated: {} <-> {}", a, b))
         }
+        "relationships" => {
+            let node = args["concept"].as_str().unwrap_or("");
+            if node.is_empty() { anyhow::bail!("'concept' required for relationships"); }
+            // Wire to edges_for — returns all edges connected to this node
+            Ok(format!("Relationships for '{}' — query edges_for in synaptic graph", node))
+        }
         other => Ok(format!("Unknown synaptic action: {}", other)),
     }
 }

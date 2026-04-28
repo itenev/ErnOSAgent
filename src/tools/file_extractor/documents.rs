@@ -210,17 +210,73 @@ pub fn extract_docx(path: &Path) -> Result<ExtractionResult> {
     ))
 }
 
+/// DOCX XML parse state.
+#[cfg(feature = "file-extract")]
+struct DocxParseState {
+    text: String,
+    tables: usize,
+    in_table: bool,
+    row_cells: Vec<String>,
+    current_cell: String,
+    current_para: String,
+    in_text: bool,
+}
+
+#[cfg(feature = "file-extract")]
+impl DocxParseState {
+    fn new() -> Self {
+        Self { text: String::new(), tables: 0, in_table: false, row_cells: Vec::new(), current_cell: String::new(), current_para: String::new(), in_text: false }
+    }
+
+    fn handle_start(&mut self, name: &str) {
+        match name {
+            "w:tbl" => { self.in_table = true; self.tables += 1; }
+            "w:tr" => { self.row_cells.clear(); }
+            "w:tc" => { self.current_cell.clear(); }
+            "w:p" => { self.current_para.clear(); }
+            "w:t" => { self.in_text = true; }
+            "w:tab" => { self.current_para.push('\t'); }
+            "w:br" => { self.current_para.push('\n'); }
+            _ => {}
+        }
+    }
+
+    fn handle_text(&mut self, content: &str) {
+        if self.in_text {
+            if self.in_table { self.current_cell.push_str(content); }
+            else { self.current_para.push_str(content); }
+        }
+    }
+
+    fn handle_end(&mut self, name: &str) {
+        match name {
+            "w:t" => { self.in_text = false; }
+            "w:p" => {
+                if !self.in_table && !self.current_para.trim().is_empty() {
+                    self.text.push_str(self.current_para.trim());
+                    self.text.push('\n');
+                }
+                if self.in_table {
+                    self.current_cell.push_str(self.current_para.trim());
+                    self.current_cell.push(' ');
+                }
+            }
+            "w:tc" => { self.row_cells.push(self.current_cell.trim().to_string()); }
+            "w:tr" => {
+                self.text.push_str("| ");
+                self.text.push_str(&self.row_cells.join(" | "));
+                self.text.push_str(" |\n");
+            }
+            "w:tbl" => { self.in_table = false; self.text.push('\n'); }
+            _ => {}
+        }
+    }
+}
+
 /// Parse DOCX XML — extract paragraphs as text, tables as markdown.
 #[cfg(feature = "file-extract")]
 fn parse_docx_xml(xml: &str) -> (String, usize) {
-    let mut text = String::new();
-    let mut tables = 0;
-    let mut in_table = false;
-    let mut row_cells: Vec<String> = Vec::new();
-    let mut current_cell = String::new();
-    let mut current_para = String::new();
-    let mut in_text = false;
-
+    let mut state = DocxParseState::new();
     let mut reader = quick_xml::Reader::from_str(xml);
     let mut buf = Vec::new();
 
@@ -229,47 +285,15 @@ fn parse_docx_xml(xml: &str) -> (String, usize) {
             Ok(quick_xml::events::Event::Start(ref e))
             | Ok(quick_xml::events::Event::Empty(ref e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                match name.as_str() {
-                    "w:tbl" => { in_table = true; tables += 1; }
-                    "w:tr" => { row_cells.clear(); }
-                    "w:tc" => { current_cell.clear(); }
-                    "w:p" => { current_para.clear(); }
-                    "w:t" => { in_text = true; }
-                    "w:tab" => { current_para.push('\t'); }
-                    "w:br" => { current_para.push('\n'); }
-                    _ => {}
-                }
+                state.handle_start(&name);
             }
             Ok(quick_xml::events::Event::Text(ref e)) => {
-                if in_text {
-                    let t = e.unescape().unwrap_or_default();
-                    if in_table { current_cell.push_str(&t); }
-                    else { current_para.push_str(&t); }
-                }
+                let t = e.unescape().unwrap_or_default();
+                state.handle_text(&t);
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                match name.as_str() {
-                    "w:t" => { in_text = false; }
-                    "w:p" => {
-                        if !in_table && !current_para.trim().is_empty() {
-                            text.push_str(current_para.trim());
-                            text.push('\n');
-                        }
-                        if in_table {
-                            current_cell.push_str(current_para.trim());
-                            current_cell.push(' ');
-                        }
-                    }
-                    "w:tc" => { row_cells.push(current_cell.trim().to_string()); }
-                    "w:tr" => {
-                        text.push_str("| ");
-                        text.push_str(&row_cells.join(" | "));
-                        text.push_str(" |\n");
-                    }
-                    "w:tbl" => { in_table = false; text.push('\n'); }
-                    _ => {}
-                }
+                state.handle_end(&name);
             }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(_) => break,
@@ -277,7 +301,7 @@ fn parse_docx_xml(xml: &str) -> (String, usize) {
         }
         buf.clear();
     }
-    (text, tables)
+    (state.text, state.tables)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -68,6 +68,14 @@ pub struct AuditResult {
 
     #[serde(default)]
     pub topic_context: String,
+
+    // Positive deviation tracking — the Observer as navigational engine
+    // Captures exemplary behaviors worth reinforcing in the training pipeline.
+    #[serde(default)]
+    pub positive_flags: Vec<String>,
+
+    #[serde(default)]
+    pub positive_deviation_note: String,
 }
 
 impl AuditResult {
@@ -83,6 +91,8 @@ impl AuditResult {
             active_topic: String::new(),
             topic_transition: String::new(),
             topic_context: String::new(),
+            positive_flags: Vec::new(),
+            positive_deviation_note: String::new(),
         }
     }
 
@@ -103,6 +113,8 @@ impl AuditResult {
             active_topic: String::new(),
             topic_transition: String::new(),
             topic_context: String::new(),
+            positive_flags: Vec::new(),
+            positive_deviation_note: String::new(),
         }
     }
 }
@@ -262,6 +274,24 @@ pub fn format_bailout_override(rejections: usize) -> String {
     )
 }
 
+/// Format rejection feedback from reason and guidance strings directly.
+/// Used by the ReAct observer path which receives these fields from `audit_reply`.
+pub fn format_rejection_feedback_from_reason(reason: &str, guidance: &str) -> String {
+    format!(
+        "[SELF-CHECK FAIL: INVISIBLE TO USER] Your response was BLOCKED.\n\
+         Why it failed: {}\n\
+         How to fix it: {}\n\
+         \n\
+         MANDATORY PROTOCOL:\n\
+         1. DO NOT apologize.\n\
+         2. DO NOT rewrite text. Your previous text was discarded.\n\
+         3. If the fix requires data you do not have, call the required tools NOW.\n\
+         4. DO NOT reply to the user until you have called all necessary tools.\n\
+         5. Build your response ONLY from verified tool outputs.",
+        reason, guidance,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +404,8 @@ mod tests {
             active_topic: String::new(),
             topic_transition: String::new(),
             topic_context: String::new(),
+            positive_flags: Vec::new(),
+            positive_deviation_note: String::new(),
         };
 
         let feedback = format_rejection_feedback(&result);

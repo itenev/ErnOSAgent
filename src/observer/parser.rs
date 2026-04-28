@@ -10,54 +10,8 @@ pub fn parse_verdict(response: &str) -> AuditResult {
     let json_str = extract_json(response);
 
     match serde_json::from_str::<serde_json::Value>(&json_str) {
-        Ok(v) => {
-            // Parse verdict — support both formats for robustness
-            let verdict = match v["verdict"].as_str() {
-                Some("BLOCKED") => Verdict::Blocked,
-                Some("ALLOWED") => Verdict::Allowed,
-                _ => {
-                    // Fallback: try legacy "approved" field
-                    if v["approved"].as_bool().unwrap_or(true) {
-                        Verdict::Allowed
-                    } else {
-                        Verdict::Blocked
-                    }
-                }
-            };
-
-            let confidence = v["confidence"].as_f64().unwrap_or(0.5) as f32;
-            let failure_category = v["failure_category"].as_str().unwrap_or("none").to_string();
-            let what_worked = v["what_worked"].as_str().unwrap_or("").to_string();
-            let what_went_wrong = v["what_went_wrong"].as_str().unwrap_or("").to_string();
-            let how_to_fix = v["how_to_fix"].as_str().unwrap_or("").to_string();
-
-            // Conversation Stack — piggybacked on the observer audit
-            let active_topic = v["active_topic"].as_str().unwrap_or("").to_string();
-            let topic_transition = v["topic_transition"].as_str().unwrap_or("").to_string();
-            let topic_context = v["topic_context"].as_str().unwrap_or("").to_string();
-
-            tracing::debug!(
-                verdict = %verdict,
-                confidence,
-                category = %failure_category,
-                active_topic = %active_topic,
-                "Observer verdict parsed"
-            );
-
-            AuditResult {
-                verdict,
-                confidence,
-                failure_category,
-                what_worked,
-                what_went_wrong,
-                how_to_fix,
-                active_topic,
-                topic_transition,
-                topic_context,
-            }
-        }
+        Ok(v) => extract_audit_fields(&v),
         Err(e) => {
-            // If we can't parse JSON, fail-open (infrastructure problem)
             tracing::warn!(
                 error = %e,
                 response_len = response.len(),
@@ -66,6 +20,64 @@ pub fn parse_verdict(response: &str) -> AuditResult {
             AuditResult::parse_error(&e.to_string())
         }
     }
+}
+
+/// Extract all audit fields from a parsed JSON value.
+fn extract_audit_fields(v: &serde_json::Value) -> AuditResult {
+    let verdict = parse_verdict_enum(v);
+    let confidence = v["confidence"].as_f64().unwrap_or(0.5) as f32;
+    let failure_category = v["failure_category"].as_str().unwrap_or("none").to_string();
+    let what_worked = v["what_worked"].as_str().unwrap_or("").to_string();
+    let what_went_wrong = v["what_went_wrong"].as_str().unwrap_or("").to_string();
+    let how_to_fix = v["how_to_fix"].as_str().unwrap_or("").to_string();
+    let (active_topic, topic_transition, topic_context) = extract_topic_fields(v);
+    let (positive_flags, positive_deviation_note) = extract_positive_fields(v);
+
+    tracing::debug!(
+        verdict = %verdict, confidence, category = %failure_category,
+        active_topic = %active_topic, positive_flags = ?positive_flags, "Observer verdict parsed"
+    );
+
+    AuditResult {
+        verdict, confidence, failure_category,
+        what_worked, what_went_wrong, how_to_fix,
+        active_topic, topic_transition, topic_context,
+        positive_flags, positive_deviation_note,
+    }
+}
+
+/// Parse the verdict enum from JSON (ALLOWED/BLOCKED or legacy approved field).
+fn parse_verdict_enum(v: &serde_json::Value) -> Verdict {
+    match v["verdict"].as_str() {
+        Some("BLOCKED") => Verdict::Blocked,
+        Some("ALLOWED") => Verdict::Allowed,
+        _ => {
+            if v["approved"].as_bool().unwrap_or(true) {
+                Verdict::Allowed
+            } else {
+                Verdict::Blocked
+            }
+        }
+    }
+}
+
+/// Extract topic-related fields from the observer JSON.
+fn extract_topic_fields(v: &serde_json::Value) -> (String, String, String) {
+    (
+        v["active_topic"].as_str().unwrap_or("").to_string(),
+        v["topic_transition"].as_str().unwrap_or("").to_string(),
+        v["topic_context"].as_str().unwrap_or("").to_string(),
+    )
+}
+
+/// Extract positive deviation fields from the observer JSON.
+fn extract_positive_fields(v: &serde_json::Value) -> (Vec<String>, String) {
+    let flags: Vec<String> = v["positive_flags"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let note = v["positive_deviation_note"].as_str().unwrap_or("").to_string();
+    (flags, note)
 }
 
 /// Extract JSON from a response that might contain surrounding text.

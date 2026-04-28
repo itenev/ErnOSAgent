@@ -239,11 +239,13 @@ pub fn file_read_tool_schema() -> serde_json::Value {
         "type": "function",
         "function": {
             "name": "file_read",
-            "description": "Read the contents of a file",
+            "description": "Read the contents of a file. Large files are automatically paginated — follow the BOOKMARK marker to continue reading where you left off. Use start_line/end_line for manual pagination.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Path to the file to read" }
+                    "path": { "type": "string", "description": "Path to the file to read" },
+                    "start_line": { "type": "integer", "description": "Start reading from this line (1-indexed). Use the line number from a BOOKMARK to continue." },
+                    "end_line": { "type": "integer", "description": "Stop reading at this line (inclusive). Omit to read one page from start_line." }
                 },
                 "required": ["path"]
             }

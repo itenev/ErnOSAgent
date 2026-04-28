@@ -20,7 +20,6 @@ pub async fn execute(args: &serde_json::Value, state: &AppState) -> Result<Strin
 
 /// Read the per-session reasoning log (JSONL).
 fn get_reasoning_log(data_dir: &Path, args: &serde_json::Value) -> Result<String> {
-    let limit = args["limit"].as_u64().unwrap_or(20) as usize;
     let session_id = args["session_id"].as_str().unwrap_or("");
 
     let dir = data_dir.join("reasoning");
@@ -36,15 +35,24 @@ fn get_reasoning_log(data_dir: &Path, args: &serde_json::Value) -> Result<String
 
     let content = std::fs::read_to_string(&path)?;
     let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(limit);
-    let recent: Vec<&str> = lines[start..].to_vec();
+    let total = lines.len();
 
-    Ok(format!("Reasoning log ({} of {} entries):\n{}", recent.len(), lines.len(), recent.join("\n")))
+    let page = args["page"].as_u64().unwrap_or(1).max(1) as usize;
+    let per_page = args["per_page"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+    let total_pages = (total + per_page - 1).max(1) / per_page.max(1);
+    let page = page.min(total_pages);
+    // Show most recent entries first — reverse order
+    let reversed: Vec<&str> = lines.iter().rev().cloned().collect();
+    let start = (page - 1) * per_page;
+    let end = (start + per_page).min(total);
+    let slice = &reversed[start..end];
+
+    Ok(format!("Reasoning log:\n{}\n--- Page {}/{} ({} total) ---",
+        slice.join("\n"), page, total_pages, total))
 }
 
 /// Read agent activity feed.
 fn get_agent_activity(data_dir: &Path, args: &serde_json::Value) -> Result<String> {
-    let limit = args["limit"].as_u64().unwrap_or(20) as usize;
     let path = data_dir.join("agent_activity.json");
 
     if !path.exists() {
@@ -57,10 +65,18 @@ fn get_agent_activity(data_dir: &Path, args: &serde_json::Value) -> Result<Strin
 
     match entries {
         Some(arr) => {
-            let capped: Vec<String> = arr.iter().take(limit)
+            let total = arr.len();
+            let page = args["page"].as_u64().unwrap_or(1).max(1) as usize;
+            let per_page = args["per_page"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
+            let total_pages = (total + per_page - 1).max(1) / per_page.max(1);
+            let page = page.min(total_pages);
+            let start = (page - 1) * per_page;
+            let end = (start + per_page).min(total);
+            let items: Vec<String> = arr[start..end].iter()
                 .map(|e| serde_json::to_string(e).unwrap_or_default())
                 .collect();
-            Ok(format!("Agent activity ({} entries):\n{}", capped.len(), capped.join("\n")))
+            Ok(format!("Agent activity:\n{}\n--- Page {}/{} ({} total) ---",
+                items.join("\n"), page, total_pages, total))
         }
         None => Ok("No agent activity entries.".to_string()),
     }
@@ -89,7 +105,6 @@ async fn get_scheduler_status(state: &AppState) -> Result<String> {
 
 /// Read observer audit history.
 fn get_observer_audit(data_dir: &Path, args: &serde_json::Value) -> Result<String> {
-    let limit = args["limit"].as_u64().unwrap_or(10) as usize;
     let path = data_dir.join("observer_history.json");
 
     if !path.exists() {
@@ -102,14 +117,24 @@ fn get_observer_audit(data_dir: &Path, args: &serde_json::Value) -> Result<Strin
 
     match entries {
         Some(arr) => {
-            let capped: Vec<String> = arr.iter().rev().take(limit).map(|e| {
+            let total = arr.len();
+            let page = args["page"].as_u64().unwrap_or(1).max(1) as usize;
+            let per_page = args["per_page"].as_u64().unwrap_or(10).clamp(1, 100) as usize;
+            let total_pages = (total + per_page - 1).max(1) / per_page.max(1);
+            let page = page.min(total_pages);
+            // Reverse to show most recent first
+            let reversed: Vec<&serde_json::Value> = arr.iter().rev().collect();
+            let start = (page - 1) * per_page;
+            let end = (start + per_page).min(total);
+            let items: Vec<String> = reversed[start..end].iter().map(|e| {
                 format!("  {} | conf:{} | {} | {}",
                     if e["approved"].as_bool().unwrap_or(true) { "✅" } else { "❌" },
                     e["confidence"].as_f64().unwrap_or(0.0),
                     e["category"].as_str().unwrap_or(""),
                     e["reason"].as_str().unwrap_or(""))
             }).collect();
-            Ok(format!("Observer audit ({} of {}):\n{}", capped.len(), arr.len(), capped.join("\n")))
+            Ok(format!("Observer audit:\n{}\n--- Page {}/{} ({} total) ---",
+                items.join("\n"), page, total_pages, total))
         }
         None => Ok("No observer audit entries.".to_string()),
     }

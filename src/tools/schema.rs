@@ -234,12 +234,12 @@ pub fn layer2_tools() -> serde_json::Value {
 }
 
 /// Build the restricted tool schema for non-admin platform users.
-/// Read-only tools only — no shell, no file writes, no system internals.
-/// Per governance: safe tier = codebase introspection + web + memory reads.
+/// Read-only tools only — no shell, no file writes, no file reads, no system internals.
+/// Per governance: safe tier = web search + memory reads + content creation.
+/// file_read is EXCLUDED — it exposes the host filesystem to untrusted users.
 pub fn platform_safe_tools() -> serde_json::Value {
     serde_json::json!([
         web_search_tool_schema(),
-        file_read_tool_schema(),
         codebase_search_tool_schema(),
         timeline_tool_schema(),
         lessons_tool_schema(),
@@ -321,18 +321,18 @@ mod tests {
     fn test_platform_safe_tools() {
         let tools = platform_safe_tools();
         let arr = tools.as_array().unwrap();
-        assert_eq!(arr.len(), 10, "Safe tier should have exactly 10 tools");
+        assert_eq!(arr.len(), 9, "Safe tier should have exactly 9 tools");
 
         // Must include read-only tools
         assert!(arr.iter().any(|t| t["function"]["name"] == "web_search"));
-        assert!(arr.iter().any(|t| t["function"]["name"] == "file_read"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "codebase_search"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "timeline"));
         assert!(arr.iter().any(|t| t["function"]["name"] == "memory"));
 
-        // Must NOT include destructive tools
+        // Must NOT include destructive or host-exposing tools
         assert!(!arr.iter().any(|t| t["function"]["name"] == "run_bash_command"));
         assert!(!arr.iter().any(|t| t["function"]["name"] == "file_write"));
+        assert!(!arr.iter().any(|t| t["function"]["name"] == "file_read"), "file_read exposes host FS to untrusted users");
         assert!(!arr.iter().any(|t| t["function"]["name"] == "codebase_edit"));
         assert!(!arr.iter().any(|t| t["function"]["name"] == "system_recompile"));
         assert!(!arr.iter().any(|t| t["function"]["name"] == "start_react_system"));

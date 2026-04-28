@@ -124,6 +124,38 @@ fn select_best_device() -> (Device, &'static str) {
     (Device::Cpu, "CPU")
 }
 
+/// Initialize SAE weight tensors in the VarMap with Xavier uniform / unit-norm init.
+fn init_sae_weights(var_map: &VarMap, nf: usize, md: usize, device: &Device) -> Result<()> {
+    let cpu = Device::Cpu;
+    let scale = (6.0 / (nf + md) as f64).sqrt();
+
+    let mut data = var_map.data().lock().expect("SAE var_map mutex poisoned");
+
+    // W_enc: [num_features, model_dim] — Xavier uniform
+    let w_enc = Var::from_tensor(
+        &(Tensor::randn(0.0f32, 1.0, (nf, md), &cpu)? * scale)?.to_device(device)?
+    )?;
+    data.insert("W_enc".to_string(), w_enc);
+
+    // b_enc: [num_features] — zeros
+    let b_enc = Var::from_tensor(&Tensor::zeros(nf, DType::F32, device)?)?;
+    data.insert("b_enc".to_string(), b_enc);
+
+    // W_dec: [model_dim, num_features] — unit-norm columns
+    let w_dec_raw = Tensor::randn(0.0f32, 1.0, (md, nf), &cpu)?.to_device(device)?;
+    let norms = w_dec_raw.sqr()?.sum(0)?.sqrt()?;
+    let norms_expanded = norms.unsqueeze(0)?.broadcast_as((md, nf))?;
+    let w_dec_normed = w_dec_raw.div(&norms_expanded)?;
+    let w_dec = Var::from_tensor(&w_dec_normed)?;
+    data.insert("W_dec".to_string(), w_dec);
+
+    // b_dec: [model_dim] — zeros
+    let b_dec = Var::from_tensor(&Tensor::zeros(md, DType::F32, device)?)?;
+    data.insert("b_dec".to_string(), b_dec);
+
+    Ok(())
+}
+
 impl SaeTrainer {
     /// Initialize a new SAE trainer.
     ///
@@ -152,45 +184,9 @@ impl SaeTrainer {
         );
 
         let var_map = VarMap::new();
-        let nf = config.num_features;
-        let md = config.model_dim;
-        let cpu = Device::Cpu;
+        init_sae_weights(&var_map, config.num_features, config.model_dim, &device)?;
 
-        // Xavier uniform initialization scale
-        let scale = (6.0 / (nf + md) as f64).sqrt();
-
-        {
-            let mut data = var_map.data().lock().expect("SAE var_map mutex poisoned");
-
-            // W_enc: [num_features, model_dim] — Xavier uniform
-            let w_enc = Var::from_tensor(
-                &(Tensor::randn(0.0f32, 1.0, (nf, md), &cpu)? * scale)?.to_device(&device)?
-            )?;
-            data.insert("W_enc".to_string(), w_enc);
-
-            // b_enc: [num_features] — zeros
-            let b_enc = Var::from_tensor(
-                &Tensor::zeros(nf, DType::F32, &device)?
-            )?;
-            data.insert("b_enc".to_string(), b_enc);
-
-            // W_dec: [model_dim, num_features] — unit-norm columns
-            let w_dec_raw = Tensor::randn(0.0f32, 1.0, (md, nf), &cpu)?.to_device(&device)?;
-            // Normalize each column to unit norm
-            let norms = w_dec_raw.sqr()?.sum(0)?.sqrt()?; // [nf]
-            let norms_expanded = norms.unsqueeze(0)?.broadcast_as((md, nf))?; // [md, nf]
-            let w_dec_normed = w_dec_raw.div(&norms_expanded)?;
-            let w_dec = Var::from_tensor(&w_dec_normed)?;
-            data.insert("W_dec".to_string(), w_dec);
-
-            // b_dec: [model_dim] — zeros
-            let b_dec = Var::from_tensor(
-                &Tensor::zeros(md, DType::F32, &device)?
-            )?;
-            data.insert("b_dec".to_string(), b_dec);
-        }
-
-        let feature_usage = vec![0u64; nf];
+        let feature_usage = vec![0u64; config.num_features];
 
         Ok(Self {
             var_map,
@@ -219,14 +215,41 @@ impl SaeTrainer {
         let flat: Vec<f32> = activations.iter().flatten().copied().collect();
         let x = Tensor::from_slice(&flat, (batch_size, model_dim), &self.device)?;
 
-        // Get trainable vars
+        // Forward pass + loss computation
+        let (h, total_loss, recon_val, l1_val, total_val) = self.forward_and_loss(&x, batch_size)?;
+
+        // Track feature usage (which features fired)
+        let h_sum = h.sum(0)?;
+        let h_sum_cpu = h_sum.to_vec1::<f32>()?;
+        for (i, &val) in h_sum_cpu.iter().enumerate() {
+            if val > 0.0 && i < self.feature_usage.len() {
+                self.feature_usage[i] += 1;
+            }
+        }
+
+        // Backward pass — compute gradients
+        let grads = total_loss.backward()?;
+
+        // AdamW update + normalize decoder
+        self.adamw_step(&grads)?;
+        self.normalize_decoder()?;
+
+        // Compute stats
+        self.current_step += 1;
+        Ok(self.compute_stats(recon_val, l1_val, total_val))
+    }
+
+    /// Forward pass + loss computation. Returns (h, total_loss, recon, l1, total).
+    fn forward_and_loss(
+        &self, x: &Tensor, batch_size: usize,
+    ) -> Result<(Tensor, Tensor, f64, f64, f64)> {
         let vars = self.var_map.data().lock().expect("SAE var_map mutex poisoned");
         let w_enc = vars.get("W_enc").context("Missing W_enc")?.as_tensor();
         let b_enc = vars.get("b_enc").context("Missing b_enc")?.as_tensor();
         let w_dec = vars.get("W_dec").context("Missing W_dec")?.as_tensor();
         let b_dec = vars.get("b_dec").context("Missing b_dec")?.as_tensor();
 
-        // Forward: pre_act = x @ W_enc^T + b_enc  [batch, num_features]
+        // pre_act = x @ W_enc^T + b_enc
         let pre_act = x.matmul(&w_enc.t()?)?.broadcast_add(b_enc)?;
 
         // JumpReLU: h = max(0, pre_act) * (pre_act > threshold)
@@ -235,63 +258,43 @@ impl SaeTrainer {
         let mask = pre_act.ge(threshold)?.to_dtype(DType::F32)?;
         let h = h.mul(&mask)?;
 
-        // Track feature usage (which features fired)
-        let h_sum = h.sum(0)?; // [num_features]
-        let h_sum_cpu = h_sum.to_vec1::<f32>()?;
-        for (i, &val) in h_sum_cpu.iter().enumerate() {
-            if val > 0.0 && i < self.feature_usage.len() {
-                self.feature_usage[i] += 1;
-            }
-        }
-
-        // Reconstruction: x̂ = h @ W_dec^T + b_dec  [batch, model_dim]
+        // Reconstruction: x̂ = h @ W_dec^T + b_dec
         let x_hat = h.matmul(&w_dec.t()?)?.broadcast_add(b_dec)?;
 
         // Reconstruction loss: ||x - x̂||² / batch_size
-        let residual = (&x - &x_hat)?;
+        let residual = (x - &x_hat)?;
         let recon_loss = residual.sqr()?.sum_all()?
             .affine(1.0 / batch_size as f64, 0.0)?;
 
-        // L1 sparsity loss: λ * Σ|h| / batch_size
+        // L1 sparsity loss
         let l1_loss = h.abs()?.sum_all()?
             .affine(self.config.l1_coefficient / batch_size as f64, 0.0)?;
 
-        // Total loss
         let total_loss = (&recon_loss + &l1_loss)?;
 
-        // Extract scalar values before backward
         let recon_val = recon_loss.to_scalar::<f32>()? as f64;
         let l1_val = l1_loss.to_scalar::<f32>()? as f64;
         let total_val = total_loss.to_scalar::<f32>()? as f64;
 
-        // Backward pass — compute gradients
-        let grads = total_loss.backward()?;
-
-        // Drop vars lock before AdamW update
         drop(vars);
+        Ok((h, total_loss, recon_val, l1_val, total_val))
+    }
 
-        // AdamW update
-        self.adamw_step(&grads)?;
-
-        // Normalize W_dec columns to unit norm after update
-        self.normalize_decoder()?;
-
-        // Stats
+    /// Compute training stats from loss values.
+    fn compute_stats(&self, recon: f64, l1: f64, total: f64) -> TrainStats {
         let active = self.feature_usage.iter().filter(|&&c| c > 0).count();
         let dead = self.config.num_features - active;
         let density = active as f64 / self.config.num_features as f64;
 
-        self.current_step += 1;
-
-        Ok(TrainStats {
+        TrainStats {
             step: self.current_step,
-            reconstruction_loss: recon_val,
-            l1_loss: l1_val,
-            total_loss: total_val,
+            reconstruction_loss: recon,
+            l1_loss: l1,
+            total_loss: total,
             active_features: active,
             dead_features: dead,
             feature_density: density,
-        })
+        }
     }
 
     /// AdamW update step for all trainable variables.
@@ -380,53 +383,11 @@ impl SaeTrainer {
         }
 
         let num_dead = dead_indices.len();
-        tracing::info!(
-            dead_count = num_dead,
-            total_features = self.config.num_features,
-            "Resampling dead features"
-        );
+        tracing::info!(dead_count = num_dead, total_features = self.config.num_features, "Resampling dead features");
 
-        let md = self.config.model_dim;
-        let vars = self.var_map.data().lock().expect("SAE var_map mutex poisoned");
-        let w_enc_var = vars.get("W_enc").context("Missing W_enc")?;
-        let b_enc_var = vars.get("b_enc").context("Missing b_enc")?;
-        let w_dec_var = vars.get("W_dec").context("Missing W_dec")?;
+        resample_weight_data(&self.var_map, &dead_indices, activations, self.config.model_dim, &self.device)?;
 
-        let mut w_enc_data = w_enc_var.as_tensor().to_vec2::<f32>()?;
-        let mut b_enc_data = b_enc_var.as_tensor().to_vec1::<f32>()?;
-        let mut w_dec_data = w_dec_var.as_tensor().to_vec2::<f32>()?;
-
-        for (resample_idx, &feat_idx) in dead_indices.iter().enumerate() {
-            // Pick a random activation as the new encoder direction
-            let act_idx = resample_idx % activations.len();
-            let activation = &activations[act_idx];
-
-            // Set encoder row to normalized activation
-            let norm: f32 = activation.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if norm > 1e-8 {
-                for j in 0..md {
-                    w_enc_data[feat_idx][j] = activation[j] / norm * 0.1;
-                }
-            }
-
-            // Reset encoder bias
-            b_enc_data[feat_idx] = 0.0;
-
-            // Reset decoder column to match encoder direction
-            for j in 0..md {
-                w_dec_data[j][feat_idx] = w_enc_data[feat_idx][j];
-            }
-        }
-
-        // Write back
-        w_enc_var.set(&Tensor::new(w_enc_data, &self.device)?)?;
-        b_enc_var.set(&Tensor::new(b_enc_data, &self.device)?)?;
-        w_dec_var.set(&Tensor::new(w_dec_data, &self.device)?)?;
-
-        // Reset counters
         self.feature_usage = vec![0u64; self.config.num_features];
-
-        // Reset Adam state for resampled features
         self.adam_m.clear();
         self.adam_v.clear();
 
@@ -434,6 +395,45 @@ impl SaeTrainer {
     }
 
     // Checkpoint, load, export, save_safetensors → trainer_persist.rs
+}
+
+/// Resample dead feature weights: set encoder row to normalized activation, reset bias and decoder.
+fn resample_weight_data(
+    var_map: &VarMap,
+    dead_indices: &[usize],
+    activations: &[Vec<f32>],
+    md: usize,
+    device: &Device,
+) -> Result<()> {
+    let vars = var_map.data().lock().expect("SAE var_map mutex poisoned");
+    let w_enc_var = vars.get("W_enc").context("Missing W_enc")?;
+    let b_enc_var = vars.get("b_enc").context("Missing b_enc")?;
+    let w_dec_var = vars.get("W_dec").context("Missing W_dec")?;
+
+    let mut w_enc_data = w_enc_var.as_tensor().to_vec2::<f32>()?;
+    let mut b_enc_data = b_enc_var.as_tensor().to_vec1::<f32>()?;
+    let mut w_dec_data = w_dec_var.as_tensor().to_vec2::<f32>()?;
+
+    for (resample_idx, &feat_idx) in dead_indices.iter().enumerate() {
+        let act_idx = resample_idx % activations.len();
+        let activation = &activations[act_idx];
+
+        let norm: f32 = activation.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-8 {
+            for j in 0..md {
+                w_enc_data[feat_idx][j] = activation[j] / norm * 0.1;
+            }
+        }
+        b_enc_data[feat_idx] = 0.0;
+        for j in 0..md {
+            w_dec_data[j][feat_idx] = w_enc_data[feat_idx][j];
+        }
+    }
+
+    w_enc_var.set(&Tensor::new(w_enc_data, device)?)?;
+    b_enc_var.set(&Tensor::new(b_enc_data, device)?)?;
+    w_dec_var.set(&Tensor::new(w_dec_data, device)?)?;
+    Ok(())
 }
 
 include!("trainer_tests.rs");

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-const MAX_PAGES: usize = 5;
+
 
 /// Shared browser state — lazily initialized, with named page slots.
 pub struct BrowserState {
@@ -78,10 +78,28 @@ async fn ensure_browser(state: &Arc<RwLock<BrowserState>>) -> Result<()> {
     let mut s = state.write().await;
     if s.browser.is_some() { return Ok(()); }
 
+    let config = build_browser_config(&s.config)?;
+
+    let (browser, mut handler) = chromiumoxide::Browser::launch(config)
+        .await
+        .context("Failed to launch Chrome")?;
+
+    let handle = tokio::spawn(async move {
+        while handler.next().await.is_some() {}
+    });
+
+    let mode = if s.config.headed { "headed" } else { "headless" };
+    tracing::info!(mode, "Chrome browser initialized");
+    s.browser = Some(browser);
+    s._handle = Some(handle);
+    Ok(())
+}
+
+/// Build the Chrome browser configuration.
+fn build_browser_config(config: &crate::config::BrowserConfig) -> Result<chromiumoxide::BrowserConfig> {
     let chrome = find_chrome_binary()
         .context("Chrome/Chromium not found. Install Google Chrome.")?;
 
-    // Use a unique user-data-dir per process to prevent SingletonLock conflicts.
     let user_data_dir = std::env::temp_dir()
         .join(format!("ern-os-chrome-{}", std::process::id()));
     std::fs::create_dir_all(&user_data_dir).ok();
@@ -89,10 +107,9 @@ async fn ensure_browser(state: &Arc<RwLock<BrowserState>>) -> Result<()> {
     let mut builder = chromiumoxide::BrowserConfig::builder()
         .chrome_executable(chrome)
         .user_data_dir(user_data_dir)
-        .window_size(s.config.window_width, s.config.window_height);
+        .window_size(config.window_width, config.window_height);
 
-    // Headed mode: visible Chrome window. Headless: invisible.
-    if s.config.headed {
+    if config.headed {
         builder = builder.with_head();
     } else {
         builder = builder.arg("--headless=new");
@@ -109,21 +126,7 @@ async fn ensure_browser(state: &Arc<RwLock<BrowserState>>) -> Result<()> {
         .arg("--disable-sync")
         .arg("--disable-translate");
 
-    let (browser, mut handler) = chromiumoxide::Browser::launch(
-        builder.build().map_err(|e| anyhow::anyhow!("{}", e))?,
-    )
-    .await
-    .context("Failed to launch Chrome")?;
-
-    let handle = tokio::spawn(async move {
-        while handler.next().await.is_some() {}
-    });
-
-    let mode = if s.config.headed { "headed" } else { "headless" };
-    tracing::info!(mode, "Chrome browser initialized");
-    s.browser = Some(browser);
-    s._handle = Some(handle);
-    Ok(())
+    builder.build().map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 // ─── Legacy API (kept for backwards compat) ───
@@ -209,9 +212,7 @@ async fn action_open(state: &Arc<RwLock<BrowserState>>, args: &serde_json::Value
     let url = args["url"].as_str().unwrap_or("about:blank");
     let mut s = state.write().await;
 
-    if s.pages.len() >= MAX_PAGES {
-        anyhow::bail!("Maximum {} concurrent pages reached. Close a page first.", MAX_PAGES);
-    }
+
 
     let browser = s.browser.as_ref().context("Browser not initialized")?;
     let page = browser.new_page(url).await
@@ -262,11 +263,8 @@ async fn get_page_context(page: &Page) -> String {
                 parts.push('  <' + tag + ' type="' + (i.type||'') + '" name="' + (i.name||'') + '" id="' + (i.id||'') + '">');
             }
             return JSON.stringify({
-                title: title,
-                url: url,
-                links: links.length,
-                buttons: buttons.length,
-                inputs: inputs.length,
+                title: title, url: url,
+                links: links.length, buttons: buttons.length, inputs: inputs.length,
                 elements: parts.join('\n')
             });
         } catch(e) { return '{}'; }
@@ -276,20 +274,23 @@ async fn get_page_context(page: &Page) -> String {
         Ok(val) => {
             let raw = val.into_value::<String>().unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-            let elements = parsed["elements"].as_str().unwrap_or("(empty page)");
-            if elements.is_empty() || elements == "(empty page)" {
-                format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: 0 | Buttons: 0 | Inputs: 0\nDOM: (empty page — no interactive elements)",
-                    parsed["title"].as_str().unwrap_or(""),
-                    parsed["url"].as_str().unwrap_or(""))
-            } else {
-                format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: {} | Buttons: {} | Inputs: {}\nDOM:\n{}",
-                    parsed["title"].as_str().unwrap_or(""),
-                    parsed["url"].as_str().unwrap_or(""),
-                    parsed["links"], parsed["buttons"], parsed["inputs"],
-                    elements)
-            }
+            format_page_context_from_json(&parsed)
         }
         Err(_) => String::new()
+    }
+}
+
+/// Format page context JSON into a human-readable DOM summary.
+fn format_page_context_from_json(parsed: &serde_json::Value) -> String {
+    let title = parsed["title"].as_str().unwrap_or("");
+    let url = parsed["url"].as_str().unwrap_or("");
+    let elements = parsed["elements"].as_str().unwrap_or("(empty page)");
+
+    if elements.is_empty() || elements == "(empty page)" {
+        format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: 0 | Buttons: 0 | Inputs: 0\nDOM: (empty page — no interactive elements)", title, url)
+    } else {
+        format!("\n\n--- Page Context ---\nTitle: {}\nURL: {}\nLinks: {} | Buttons: {} | Inputs: {}\nDOM:\n{}",
+            title, url, parsed["links"], parsed["buttons"], parsed["inputs"], elements)
     }
 }
 
@@ -479,8 +480,5 @@ mod tests {
         assert!(state.pages.is_empty());
     }
 
-    #[test]
-    fn test_max_pages_constant() {
-        assert!(MAX_PAGES >= 3);
-    }
+
 }

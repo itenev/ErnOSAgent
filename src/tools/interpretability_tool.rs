@@ -13,7 +13,7 @@ pub async fn execute(args: &serde_json::Value, state: &AppState) -> Result<Strin
         "snapshot" => take_snapshot(),
         "top_features" | "features" => top_features(args),
         "encode" => encode_input(args, state).await,
-        "divergence" => Ok("Divergence analysis requires live SAE — connect to interpretability dashboard.".to_string()),
+        "divergence" => compute_divergence(args, state).await,
         "probe" => probe_concept(args),
         "labeled_features" => list_labeled_features(),
         other => Ok(format!("Unknown interpretability action: {}", other)),
@@ -49,7 +49,6 @@ async fn encode_input(args: &serde_json::Value, state: &AppState) -> Result<Stri
     if input.is_empty() { anyhow::bail!("'input' required for encode"); }
     let top_k = args["top_k"].as_u64().unwrap_or(10) as usize;
 
-    // Check if SAE is loaded
     let sae_guard = state.sae.read().await;
     let sae = match sae_guard.as_ref() {
         Some(s) => s,
@@ -58,59 +57,66 @@ async fn encode_input(args: &serde_json::Value, state: &AppState) -> Result<Stri
         ),
     };
 
-    // Get embeddings from provider (activation proxy)
     let activations = match state.provider.embed(input).await {
         Ok(a) => a,
-        Err(e) => {
-            return Ok(format!(
-                "Failed to get embeddings for encode: {}. Is the embedding server running?", e
-            ));
-        }
+        Err(e) => return Ok(format!(
+            "Failed to get embeddings for encode: {}. Is the embedding server running?", e
+        )),
     };
 
-    // Dimension check — embedding dim may differ from SAE model_dim
     let act_dim = activations.len();
-    let sae_dim = sae.model_dim;
-
-    let aligned = if act_dim == sae_dim {
-        activations
-    } else if act_dim > sae_dim {
-        // Truncate to SAE dimension (use first model_dim elements)
-        activations[..sae_dim].to_vec()
-    } else {
-        // Pad with zeros
-        let mut padded = activations;
-        padded.resize(sae_dim, 0.0);
-        padded
-    };
-
-    // Run SAE encode
+    let aligned = align_activations(activations, sae.model_dim);
     let features = sae.encode(&aligned, top_k);
 
     if features.is_empty() {
         return Ok(format!(
             "SAE encoded '{}' — no features activated above threshold.\n\
              Embedding dim: {}, SAE dim: {}, features: {}",
-            &input[..input.len().min(50)], act_dim, sae_dim, sae.num_features
+            &input[..input.len().min(50)], act_dim, sae.model_dim, sae.num_features
         ));
     }
 
-    // Format results
+    Ok(format_feature_results(input, act_dim, sae.model_dim, sae.num_features, top_k, &features))
+}
+
+/// Align activation dimensions to SAE model_dim by truncating or zero-padding.
+fn align_activations(activations: Vec<f32>, sae_dim: usize) -> Vec<f32> {
+    let act_dim = activations.len();
+    if act_dim == sae_dim {
+        activations
+    } else if act_dim > sae_dim {
+        activations[..sae_dim].to_vec()
+    } else {
+        let mut padded = activations;
+        padded.resize(sae_dim, 0.0);
+        padded
+    }
+}
+
+/// Format SAE feature results into a human-readable table.
+fn format_feature_results(
+    input: &str,
+    act_dim: usize,
+    sae_dim: usize,
+    num_features: usize,
+    top_k: usize,
+    features: &[crate::interpretability::sae::FeatureActivation],
+) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "SAE Encode: '{}'\nEmbedding dim: {} → SAE dim: {} | {} features | top {}:",
-        &input[..input.len().min(50)], act_dim, sae_dim, sae.num_features, top_k
+        &input[..input.len().min(50)], act_dim, sae_dim, num_features, top_k
     ));
     lines.push(String::new());
     lines.push(format!("{:<8} {:<12} {}", "Feature", "Activation", "Label"));
     lines.push(format!("{:<8} {:<12} {}", "-------", "----------", "-----"));
 
-    for f in &features {
+    for f in features {
         let label = f.label.as_deref().unwrap_or("(unlabeled)");
         lines.push(format!("{:<8} {:<12.6} {}", f.index, f.activation, label));
     }
 
-    Ok(lines.join("\n"))
+    lines.join("\n")
 }
 
 fn probe_concept(args: &serde_json::Value) -> Result<String> {
@@ -127,6 +133,46 @@ fn list_labeled_features() -> Result<String> {
     } else {
         Ok("No labeled features found. Train SAE and label features to populate.".to_string())
     }
+}
+
+/// Compute divergence between two text inputs via activation comparison.
+/// Uses extract_batch for activation collection and cosine_distance for comparison.
+async fn compute_divergence(args: &serde_json::Value, state: &AppState) -> Result<String> {
+    let text_a = args["text_a"].as_str().or(args["input"].as_str()).unwrap_or("");
+    let text_b = args["text_b"].as_str().unwrap_or("");
+    if text_a.is_empty() || text_b.is_empty() {
+        anyhow::bail!("'text_a' and 'text_b' required for divergence analysis");
+    }
+
+    let texts = [text_a, text_b];
+    let results = crate::interpretability::extractor::extract_batch(
+        state.provider.as_ref(), &texts
+    ).await;
+
+    if results.len() < 2 {
+        return Ok("Failed to extract activations for both texts".to_string());
+    }
+
+    let dist = crate::interpretability::divergence::cosine_distance(
+        &results[0].activations, &results[1].activations
+    );
+    let kl = crate::interpretability::divergence::kl_divergence(
+        &results[0].activations, &results[1].activations
+    );
+
+    Ok(format!(
+        "Divergence analysis:\n\
+         Text A: '{}'\n\
+         Text B: '{}'\n\
+         Cosine distance: {:.6}\n\
+         KL divergence: {:.6}\n\
+         Activation dims: A={}, B={}",
+        &text_a[..text_a.len().min(50)],
+        &text_b[..text_b.len().min(50)],
+        dist, kl,
+        results[0].activations.len(),
+        results[1].activations.len(),
+    ))
 }
 
 #[cfg(test)]

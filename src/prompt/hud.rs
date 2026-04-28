@@ -26,7 +26,25 @@ pub fn build_hud(ctx: &HudContext) -> String {
     let utc_now = chrono::Utc::now();
     let local_now = chrono::Local::now();
 
-    let mut hud = format!(
+    let mut hud = format_hud_template(ctx, &utc_now, &local_now);
+
+    if let Some(ref stack) = ctx.conversation_stack {
+        let section = stack.to_hud_section();
+        if !section.is_empty() {
+            hud.push_str(&section);
+        }
+    }
+
+    hud
+}
+
+/// Format the HUD template with all system state values.
+fn format_hud_template(
+    ctx: &HudContext,
+    utc_now: &chrono::DateTime<chrono::Utc>,
+    local_now: &chrono::DateTime<chrono::Local>,
+) -> String {
+    format!(
         "# System State (Live)\n\n\
          ## Ground Truth — Current Date & Time\n\
          This is live data from the host system clock. It is the authoritative source for all temporal reasoning.\n\
@@ -51,30 +69,12 @@ pub fn build_hud(ctx: &HudContext) -> String {
          ## Observer: {}",
         utc_now.format("%A, %B %d, %Y at %H:%M:%S UTC"),
         local_now.format("%A, %B %d, %Y at %H:%M:%S %Z"),
-        ctx.model_name,
-        ctx.provider,
-        ctx.context_length,
-        ctx.session_id,
-        ctx.turn_count,
-        ctx.platform,
-        ctx.timeline_count,
-        ctx.lesson_count,
-        ctx.procedure_count,
-        ctx.scratchpad_count,
-        ctx.golden_count,
-        ctx.rejection_count,
+        ctx.model_name, ctx.provider, ctx.context_length,
+        ctx.session_id, ctx.turn_count, ctx.platform,
+        ctx.timeline_count, ctx.lesson_count, ctx.procedure_count, ctx.scratchpad_count,
+        ctx.golden_count, ctx.rejection_count,
         if ctx.observer_enabled { "Enabled" } else { "Disabled" },
-    );
-
-    // Append conversation stack if available
-    if let Some(ref stack) = ctx.conversation_stack {
-        let section = stack.to_hud_section();
-        if !section.is_empty() {
-            hud.push_str(&section);
-        }
-    }
-
-    hud
+    )
 }
 
 #[cfg(test)]

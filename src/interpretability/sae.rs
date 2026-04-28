@@ -124,33 +124,7 @@ impl SparseAutoencoder {
         );
 
         let start = std::time::Instant::now();
-
-        // Compute f_i(x) = activation_fn(W_enc_i · x + b_enc_i)
-        let mut feature_acts: Vec<(usize, f32)> = Vec::new();
-
-        for i in 0..self.num_features {
-            let row_start = i * self.model_dim;
-            let mut dot = self.b_enc[i];
-            for j in 0..self.model_dim {
-                dot += self.w_enc[row_start + j] * activations[j];
-            }
-
-            let act = match self.architecture {
-                SaeArchitecture::ReLU => dot.max(0.0),
-                SaeArchitecture::JumpReLU { threshold } => {
-                    if dot > threshold {
-                        dot
-                    } else {
-                        0.0
-                    }
-                }
-                SaeArchitecture::TopK { .. } => dot, // filtering done below
-            };
-
-            if act > 0.0 {
-                feature_acts.push((i, act));
-            }
-        }
+        let mut feature_acts = self.compute_feature_activations(activations);
 
         // For TopK, keep only the K largest
         if let SaeArchitecture::TopK { k } = self.architecture {
@@ -164,16 +138,11 @@ impl SparseAutoencoder {
 
         let result: Vec<FeatureActivation> = feature_acts
             .into_iter()
-            .map(|(index, activation)| FeatureActivation {
-                index,
-                activation,
-                label: None,
-            })
+            .map(|(index, activation)| FeatureActivation { index, activation, label: None })
             .collect();
 
         tracing::debug!(
-            top_k = top_k,
-            returned = result.len(),
+            top_k, returned = result.len(),
             architecture = format!("{:?}", self.architecture),
             top_activation = result.first().map(|f| f.activation).unwrap_or(0.0),
             elapsed_us = start.elapsed().as_micros(),
@@ -181,6 +150,33 @@ impl SparseAutoencoder {
         );
 
         result
+    }
+
+    /// Compute raw feature activations: f_i(x) = activation_fn(W_enc_i · x + b_enc_i).
+    fn compute_feature_activations(&self, activations: &[f32]) -> Vec<(usize, f32)> {
+        let mut feature_acts: Vec<(usize, f32)> = Vec::new();
+
+        for i in 0..self.num_features {
+            let row_start = i * self.model_dim;
+            let mut dot = self.b_enc[i];
+            for j in 0..self.model_dim {
+                dot += self.w_enc[row_start + j] * activations[j];
+            }
+
+            let act = match self.architecture {
+                SaeArchitecture::ReLU => dot.max(0.0),
+                SaeArchitecture::JumpReLU { threshold } => {
+                    if dot > threshold { dot } else { 0.0 }
+                }
+                SaeArchitecture::TopK { .. } => dot,
+            };
+
+            if act > 0.0 {
+                feature_acts.push((i, act));
+            }
+        }
+
+        feature_acts
     }
 
     /// Decode sparse features back to activation space (for steering vectors).
@@ -213,81 +209,86 @@ impl SparseAutoencoder {
         let data = std::fs::read(path)
             .with_context(|| format!("Failed to read SAE weights: {}", path.display()))?;
 
-        if data.len() < 8 {
-            anyhow::bail!("SAE weights file too small");
-        }
-
-        let header_bytes: [u8; 8] = data[0..8].try_into()
-            .context("Failed to read safetensors header length")?;
-        let header_len = u64::from_le_bytes(header_bytes) as usize;
-        if data.len() < 8 + header_len {
-            anyhow::bail!("SAE weights file truncated");
-        }
-
-        let header_str = std::str::from_utf8(&data[8..8 + header_len])
-            .context("Invalid UTF-8 in safetensors header")?;
-        let header: serde_json::Value = serde_json::from_str(header_str)
-            .context("Invalid JSON in safetensors header")?;
-
-        let tensor_start = 8 + header_len;
-        let mut w_enc = Vec::new();
-        let mut b_enc = Vec::new();
-        let mut w_dec = Vec::new();
-        let mut b_dec = Vec::new();
-        let (mut num_features, mut model_dim) = (0usize, 0usize);
-
-        for (name, info) in header.as_object().unwrap_or(&serde_json::Map::new()) {
-            if name == "__metadata__" { continue; }
-            let dtype = info["dtype"].as_str().unwrap_or("F32");
-            if dtype != "F32" { continue; }
-
-            if let Some(offsets) = info["data_offsets"].as_array() {
-                let s = offsets[0].as_u64().unwrap_or(0) as usize + tensor_start;
-                let e = offsets[1].as_u64().unwrap_or(0) as usize + tensor_start;
-                if e > data.len() { continue; }
-                let floats: Vec<f32> = data[s..e].chunks_exact(4)
-                    .filter_map(|c| c.try_into().ok().map(|arr: [u8; 4]| f32::from_le_bytes(arr)))
-                    .collect();
-
-                match name.as_str() {
-                    "W_enc" => {
-                        if let Some(shape) = info["shape"].as_array() {
-                            if shape.len() == 2 {
-                                num_features = shape[0].as_u64().unwrap_or(0) as usize;
-                                model_dim = shape[1].as_u64().unwrap_or(0) as usize;
-                            }
-                        }
-                        w_enc = floats;
-                    }
-                    "b_enc" => b_enc = floats,
-                    "W_dec" => w_dec = floats,
-                    "b_dec" => b_dec = floats,
-                    _ => {}
-                }
-            }
-        }
+        let (header, tensor_start) = parse_safetensors_header(&data)?;
+        let (w_enc, b_enc, w_dec, b_dec, num_features, model_dim) =
+            extract_tensor_data(&header, &data, tensor_start)?;
 
         if num_features == 0 || model_dim == 0 {
             anyhow::bail!("Could not determine SAE dimensions from safetensors");
         }
 
-        tracing::info!(
-            num_features = num_features,
-            model_dim = model_dim,
-            path = %path.display(),
-            "Loaded SAE weights from safetensors"
-        );
+        tracing::info!(num_features, model_dim, path = %path.display(), "Loaded SAE weights from safetensors");
 
         Ok(Self::new(
-            w_enc,
-            b_enc,
-            w_dec,
-            b_dec,
-            num_features,
-            model_dim,
+            w_enc, b_enc, w_dec, b_dec,
+            num_features, model_dim,
             SaeArchitecture::JumpReLU { threshold: 0.001 },
         ))
     }
+}
+
+/// Parse the safetensors binary header, returning the JSON header and tensor data offset.
+fn parse_safetensors_header(data: &[u8]) -> anyhow::Result<(serde_json::Value, usize)> {
+    use anyhow::Context;
+    if data.len() < 8 {
+        anyhow::bail!("SAE weights file too small");
+    }
+    let header_bytes: [u8; 8] = data[0..8].try_into()
+        .context("Failed to read safetensors header length")?;
+    let header_len = u64::from_le_bytes(header_bytes) as usize;
+    if data.len() < 8 + header_len {
+        anyhow::bail!("SAE weights file truncated");
+    }
+    let header_str = std::str::from_utf8(&data[8..8 + header_len])
+        .context("Invalid UTF-8 in safetensors header")?;
+    let header: serde_json::Value = serde_json::from_str(header_str)
+        .context("Invalid JSON in safetensors header")?;
+    Ok((header, 8 + header_len))
+}
+
+/// Extract tensor data from safetensors, returning (w_enc, b_enc, w_dec, b_dec, num_features, model_dim).
+fn extract_tensor_data(
+    header: &serde_json::Value,
+    data: &[u8],
+    tensor_start: usize,
+) -> anyhow::Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, usize, usize)> {
+    let mut w_enc = Vec::new();
+    let mut b_enc = Vec::new();
+    let mut w_dec = Vec::new();
+    let mut b_dec = Vec::new();
+    let (mut num_features, mut model_dim) = (0usize, 0usize);
+
+    for (name, info) in header.as_object().unwrap_or(&serde_json::Map::new()) {
+        if name == "__metadata__" { continue; }
+        if info["dtype"].as_str().unwrap_or("F32") != "F32" { continue; }
+
+        if let Some(offsets) = info["data_offsets"].as_array() {
+            let s = offsets[0].as_u64().unwrap_or(0) as usize + tensor_start;
+            let e = offsets[1].as_u64().unwrap_or(0) as usize + tensor_start;
+            if e > data.len() { continue; }
+            let floats: Vec<f32> = data[s..e].chunks_exact(4)
+                .filter_map(|c| c.try_into().ok().map(|arr: [u8; 4]| f32::from_le_bytes(arr)))
+                .collect();
+
+            match name.as_str() {
+                "W_enc" => {
+                    if let Some(shape) = info["shape"].as_array() {
+                        if shape.len() == 2 {
+                            num_features = shape[0].as_u64().unwrap_or(0) as usize;
+                            model_dim = shape[1].as_u64().unwrap_or(0) as usize;
+                        }
+                    }
+                    w_enc = floats;
+                }
+                "b_enc" => b_enc = floats,
+                "W_dec" => w_dec = floats,
+                "b_dec" => b_dec = floats,
+                _ => {}
+            }
+        }
+    }
+
+    Ok((w_enc, b_enc, w_dec, b_dec, num_features, model_dim))
 }
 
 #[cfg(test)]

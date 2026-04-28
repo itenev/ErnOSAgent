@@ -8,6 +8,26 @@
 
 use std::path::Path;
 
+fn paginate_lines(items: &[String], page: usize, per_page: usize) -> String {
+    let total = items.len();
+    if total == 0 { return String::new(); }
+    let total_pages = (total + per_page - 1) / per_page;
+    let page = page.min(total_pages);
+    let start = (page - 1) * per_page;
+    let end = (start + per_page).min(total);
+    let mut out = items[start..end].join("\n");
+    out.push_str(&format!("\n--- Page {}/{} ({} total) ---", page, total_pages, total));
+    out
+}
+
+fn get_page(args: &serde_json::Value) -> usize {
+    args["page"].as_u64().unwrap_or(1).max(1) as usize
+}
+
+fn get_per_page(args: &serde_json::Value) -> usize {
+    args["per_page"].as_u64().unwrap_or(30).clamp(1, 100) as usize
+}
+
 /// Execute a system_logs action.
 pub fn execute(args: &serde_json::Value, data_dir: &Path) -> anyhow::Result<String> {
     tracing::info!(tool = "system_logs", "tool START");
@@ -23,7 +43,6 @@ pub fn execute(args: &serde_json::Value, data_dir: &Path) -> anyhow::Result<Stri
 
 /// Return the last N lines from the upgrade/runtime log.
 fn tail_logs(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<String> {
-    let n = args["lines"].as_u64().unwrap_or(50) as usize;
     let log_path = data_dir.join("logs/upgrade.log");
 
     if !log_path.exists() {
@@ -31,14 +50,11 @@ fn tail_logs(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<String
     }
 
     let content = std::fs::read_to_string(&log_path)?;
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    let tail: Vec<&str> = lines[start..].to_vec();
-
-    Ok(format!(
-        "Last {} lines (of {}):\n{}",
-        tail.len(), lines.len(), tail.join("\n")
-    ))
+    let lines: Vec<String> = content.lines().rev().map(|s| s.to_string()).collect();
+    if lines.is_empty() {
+        return Ok("Log file is empty.".to_string());
+    }
+    Ok(paginate_lines(&lines, get_page(args), get_per_page(args)))
 }
 
 /// Grep for ERROR and WARN lines across log files.
@@ -80,7 +96,7 @@ fn grep_errors(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<Stri
     if errors.is_empty() {
         Ok("No errors or warnings found in logs.".into())
     } else {
-        Ok(format!("{} error/warning line(s):\n{}", errors.len(), errors.join("\n")))
+        Ok(paginate_lines(&errors, get_page(args), get_per_page(args)))
     }
 }
 
@@ -117,13 +133,12 @@ fn search_logs(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<Stri
     if matches.is_empty() {
         Ok(format!("No matches for '{}' in logs.", pattern))
     } else {
-        Ok(format!("{} match(es) for '{}':\n{}", matches.len(), pattern, matches.join("\n")))
+        Ok(paginate_lines(&matches, get_page(args), get_per_page(args)))
     }
 }
 
 /// List recent self-edit audit entries.
 fn list_self_edits(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<String> {
-    let n = args["max"].as_u64().unwrap_or(20) as usize;
     let path = data_dir.join("self_edit_log.jsonl");
 
     if !path.exists() {
@@ -131,14 +146,11 @@ fn list_self_edits(data_dir: &Path, args: &serde_json::Value) -> anyhow::Result<
     }
 
     let content = std::fs::read_to_string(&path)?;
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    let recent: Vec<&str> = lines[start..].to_vec();
-
-    Ok(format!(
-        "{} self-edit(s) (last {} of {}):\n{}",
-        recent.len(), n, lines.len(), recent.join("\n")
-    ))
+    let lines: Vec<String> = content.lines().rev().map(|s| s.to_string()).collect();
+    if lines.is_empty() {
+        return Ok("No self-edit entries.".to_string());
+    }
+    Ok(paginate_lines(&lines, get_page(args), get_per_page(args)))
 }
 
 #[cfg(test)]

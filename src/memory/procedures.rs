@@ -119,6 +119,27 @@ impl ProcedureStore {
 
     pub fn all(&self) -> &[Procedure] { &self.procedures }
     pub fn count(&self) -> usize { self.procedures.len() }
+
+    /// Collect recent tool usage as (tool_name, result_summary) pairs.
+    /// Used by skill synthesis to analyse completed workflows.
+    pub fn recent_tool_usage(&self, limit: usize) -> Vec<(String, String)> {
+        self.procedures.iter()
+            .rev()
+            .take(limit)
+            .flat_map(|p| p.steps.iter().map(|s| (s.tool.clone(), s.purpose.clone())))
+            .collect()
+    }
+
+    /// Record a skill from synthesis — wraps add_if_new with a summary step.
+    pub fn record_skill(&mut self, name: &str, description: &str) -> Result<()> {
+        let step = ProcedureStep {
+            tool: "synthesised".to_string(),
+            purpose: description.to_string(),
+            instruction: String::new(),
+        };
+        let _ = self.add_if_new(name, description, vec![step])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

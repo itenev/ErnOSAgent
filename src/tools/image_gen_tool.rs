@@ -15,20 +15,30 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
         anyhow::bail!("Image prompt cannot be empty");
     }
 
+    tracing::info!(prompt = %prompt, width, height, steps, "Generating image via Flux");
+
+    let b64 = call_flux_server(prompt, width, height, steps, guidance).await?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("{}.png", id);
+    save_base64_image(&b64, &filename)?;
+
+    tracing::info!(filename = %filename, prompt = %prompt.chars().take(50).collect::<String>(), "Image generated and saved");
+
+    Ok(format_success_response(&filename, prompt, width, height, steps))
+}
+
+/// Send generation request to the Flux server and return base64 image.
+async fn call_flux_server(prompt: &str, width: u32, height: u32, steps: u32, guidance: f64) -> Result<String> {
     let port = std::env::var("FLUX_PORT").unwrap_or_else(|_| "8890".to_string());
     let url = format!("http://127.0.0.1:{}/generate", port);
-
-    tracing::info!(prompt = %prompt, width, height, steps, "Generating image via Flux");
 
     let client = reqwest::Client::new();
     let resp = client
         .post(&url)
         .json(&serde_json::json!({
-            "prompt": prompt,
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "guidance": guidance,
+            "prompt": prompt, "width": width, "height": height,
+            "steps": steps, "guidance": guidance,
         }))
         .timeout(std::time::Duration::from_secs(300))
         .send()
@@ -38,55 +48,48 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        // Try to parse structured error from the server
-        let error_msg = if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&body) {
-            let err = err_json["error"].as_str().unwrap_or("unknown");
-            let tb = err_json["traceback"].as_str().unwrap_or("");
-            if tb.is_empty() {
-                format!("Flux error: {}", err)
-            } else {
-                // Give the agent the last 3 lines of the traceback (the useful part)
-                let tb_tail: String = tb.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-                format!("Flux error: {}\n{}", err, tb_tail)
-            }
-        } else {
-            format!("Flux server returned {}: {}", status, body)
-        };
-        anyhow::bail!("{}", error_msg);
+        anyhow::bail!("{}", parse_flux_error(status, &body));
     }
 
     let result: serde_json::Value = resp.json().await
         .context("Failed to parse Flux server response")?;
 
-    let b64 = result["image_base64"].as_str()
-        .context("Flux response missing image_base64 field")?;
+    result["image_base64"].as_str()
+        .context("Flux response missing image_base64 field")
+        .map(|s| s.to_string())
+}
 
-    let id = uuid::Uuid::new_v4().to_string();
-    let filename = format!("{}.png", id);
-    save_base64_image(b64, &filename)?;
+/// Parse a Flux server error response, extracting traceback if available.
+fn parse_flux_error(status: reqwest::StatusCode, body: &str) -> String {
+    if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(body) {
+        let err = err_json["error"].as_str().unwrap_or("unknown");
+        let tb = err_json["traceback"].as_str().unwrap_or("");
+        if tb.is_empty() {
+            return format!("Flux error: {}", err);
+        }
+        let tb_tail: String = tb.lines().rev().take(3)
+            .collect::<Vec<_>>().into_iter().rev()
+            .collect::<Vec<_>>().join("\n");
+        format!("Flux error: {}\n{}", err, tb_tail)
+    } else {
+        format!("Flux server returned {}: {}", status, body)
+    }
+}
 
-    tracing::info!(
-        filename = %filename,
-        prompt = %prompt.chars().take(50).collect::<String>(),
-        "Image generated and saved"
-    );
-
+/// Format the markdown success response for a generated image.
+fn format_success_response(
+    filename: &str, prompt: &str, width: u32, height: u32, steps: u32,
+) -> String {
     // Return markdown image tag pointing to the served file.
     // DO NOT include base64 data — it would consume ~200K+ tokens
     // and blow the context window on re-inference.
     let image_url = format!("/api/images/{}", filename);
-
-    Ok(format!(
+    format!(
         "![{prompt}]({image_url})\n\n\
          Image generated successfully ({width}×{height}, {steps} steps).\n\
          The image is saved at {image_url} and will be displayed in the chat.\n\
          Deliver it to the user with the markdown image tag above.",
-        prompt = prompt,
-        image_url = image_url,
-        width = width,
-        height = height,
-        steps = steps,
-    ))
+    )
 }
 
 /// Decode base64 and save to data/images/.

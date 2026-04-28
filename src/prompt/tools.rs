@@ -7,7 +7,9 @@
 
 /// Build the tool usage guidance section — loads from disk if available, falls back to hardcoded.
 pub fn tool_guidance() -> String {
-    TOOL_GUIDANCE.to_string()
+    // Check for custom tool guidance in the standard data dir
+    let data_dir = std::path::Path::new("data");
+    load_tool_guidance(data_dir)
 }
 
 /// Load tool guidance from data/prompts/tools.md.
