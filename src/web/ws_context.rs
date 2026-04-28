@@ -121,11 +121,18 @@ pub async fn build_chat_context(
 async fn resolve_prompts(state: &AppState, agent_id: Option<&str>) -> (String, String) {
     if let Some(aid) = agent_id {
         let agents = state.agents.read().await;
+        let agent = agents.get(aid);
+        let core_custom = agent.map_or(false, |a| a.has_custom_prompt("core"));
+        let identity_custom = agent.map_or(false, |a| a.has_custom_prompt("identity"));
         let core = agents.resolve_prompt(aid, "core")
             .unwrap_or_else(|_| crate::prompt::load_core(std::path::Path::new(&state.config.general.data_dir)));
         let identity = agents.resolve_prompt(aid, "identity")
             .unwrap_or_else(|_| crate::prompt::load_identity(std::path::Path::new(&state.config.general.data_dir)));
-        tracing::info!(agent = %aid, "Using agent-specific prompts");
+        tracing::info!(
+            agent = %aid,
+            core_custom, identity_custom,
+            "Agent prompt resolution"
+        );
         (core, identity)
     } else {
         let core = crate::prompt::load_core(std::path::Path::new(&state.config.general.data_dir));
@@ -183,6 +190,8 @@ async fn consolidate_if_needed(
             "You are a context consolidation engine. Summarize the following conversation \
              into a dense, factual summary preserving all key information, decisions, \
              code changes, facts discussed, and user preferences. Be thorough but concise. \
+             CRITICAL: Always preserve any [FILE SAVED: ...] references and file paths \
+             EXACTLY as they appear — the model needs these to re-read files later. \
              Output ONLY the summary, no preamble."),
         Message::text("user", &format!(
             "Summarize this conversation segment ({} messages):\n\n{}",
@@ -234,7 +243,8 @@ fn trim_verbose_tool_results(history: Vec<Message>) -> Vec<Message> {
         if i < boundary && msg.role == "tool" {
             let text = msg.text_content();
             if text.len() > 500 {
-                let truncated = format!("{}... [trimmed {}/{} chars]", &text[..500], 500, text.len());
+                let b = text.char_indices().take_while(|(i,_)| *i <= 500).last().map(|(i,_)| i).unwrap_or(0);
+                let truncated = format!("{}... [trimmed {}/{} chars]", &text[..b], b, text.len());
                 trimmed.push(Message::tool_result(
                     msg.tool_call_id.as_deref().unwrap_or(""),
                     &truncated,

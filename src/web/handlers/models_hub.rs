@@ -67,7 +67,7 @@ pub async fn start_download(
             "downloading": true, "model": &filename, "repo": &repo,
             "progress": 0.0, "total_bytes": 0, "downloaded_bytes": 0,
         });
-        let _ = tokio::fs::write(&progress_path, serde_json::to_string(&progress).unwrap()).await;
+        let _ = tokio::fs::write(&progress_path, serde_json::to_string(&progress).unwrap_or_default()).await;
 
         match reqwest::get(&url).await {
             Ok(resp) => {
@@ -96,7 +96,7 @@ pub async fn start_download(
                                 "downloading": true, "model": &filename, "repo": &repo,
                                 "progress": pct, "total_bytes": total, "downloaded_bytes": downloaded,
                             });
-                            let _ = tokio::fs::write(&progress_path, serde_json::to_string(&progress).unwrap()).await;
+                            let _ = tokio::fs::write(&progress_path, serde_json::to_string(&progress).unwrap_or_default()).await;
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Download chunk error");
@@ -107,7 +107,7 @@ pub async fn start_download(
 
                 let _ = file.flush().await;
                 let done = serde_json::json!({"downloading": false, "model": &filename, "complete": true});
-                let _ = tokio::fs::write(&progress_path, serde_json::to_string(&done).unwrap()).await;
+                let _ = tokio::fs::write(&progress_path, serde_json::to_string(&done).unwrap_or_default()).await;
                 tracing::info!(model = %filename, bytes = downloaded, "Model download complete");
             }
             Err(e) => {

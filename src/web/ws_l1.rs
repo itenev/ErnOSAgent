@@ -4,12 +4,13 @@ use crate::provider::Message;
 use crate::tools::schema;
 use crate::web::state::AppState;
 use crate::web::ws_learning::PendingToolChain;
-use crate::web::ws_stream::{ConsumeResult, consume_silently, audit_and_retry, send_ws};
+use crate::web::ws_stream::{audit_and_retry, send_ws};
+use crate::inference::stream_consumer::ConsumeResult;
 use crate::web::ws_learning::{ingest_assistant_turn, spawn_insight_extraction};
 use crate::web::ws_react::run_react_loop;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 
-/// Deliver a reply: audit, stream, ingest, extract insights.
+/// Deliver a reply: audit, sanitize, stream, ingest, extract insights.
 pub async fn deliver_reply(
     state: &AppState,
     provider: &dyn crate::provider::Provider,
@@ -26,9 +27,38 @@ pub async fn deliver_reply(
         tracing::debug!(len = t.len(), "Thinking captured for audit");
     }
     let approved_text = audit_and_retry(state, provider, sender, messages, tools, user_query, text, session_id).await;
-    send_ws(sender, "text_delta", &serde_json::json!({"content": &approved_text})).await;
-    ingest_assistant_turn(state, &approved_text, session_id).await;
-    spawn_insight_extraction(state, user_query, &approved_text);
+
+    // Post-audit sanitization — last-resort scrubber for leaked tool output
+    let scrub = crate::web::output_sanitizer::scrub_tool_leaks(&approved_text);
+    let final_text = if crate::web::output_sanitizer::needs_reinference(&scrub) {
+        // Leaked content was ALL there was — attempt silent re-inference
+        tracing::warn!("Sanitizer stripped entire response — triggering re-inference");
+        messages.push(Message::text("system", "[SYSTEM: Your previous response leaked raw tool output. Synthesize the tool results into a natural language response for the user.]"));
+        match provider.chat_sync(messages, Some(tools)).await {
+            Ok(retry) => {
+                let retry_scrub = crate::web::output_sanitizer::scrub_tool_leaks(&retry);
+                // DPO capture: leaked original → rejection, clean retry → chosen
+                capture_leak_dpo(state, user_query, &retry_scrub.text, &approved_text).await;
+                retry_scrub.text
+            }
+            Err(e) => {
+                // Re-inference failed — deliver original output, never a canned message
+                tracing::error!(error = %e, "Re-inference failed — delivering original output");
+                capture_leak_dpo(state, user_query, &approved_text, &approved_text).await;
+                approved_text.clone()
+            }
+        }
+    } else if scrub.had_leak {
+        // Partial leak was stripped — capture for DPO
+        capture_leak_dpo(state, user_query, &scrub.text, &approved_text).await;
+        scrub.text
+    } else {
+        scrub.text
+    };
+
+    send_ws(sender, "text_delta", &serde_json::json!({"content": &final_text})).await;
+    ingest_assistant_turn(state, &final_text, session_id).await;
+    spawn_insight_extraction(state, user_query, &final_text);
     send_ws(sender, "done", &serde_json::json!({})).await;
 }
 
@@ -77,9 +107,25 @@ pub async fn run_l1_tool_chain(
             Err(e) => { tracing::error!(error = %e, "L1 re-inference FAILED"); break; }
         };
 
-        match consume_silently(rx_next, sender).await {
+        // Use unified stream consumer with WebSocket sink
+        use crate::inference::stream_consumer::{self, WebSocketSink};
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut sink = WebSocketSink { sender, cancel };
+        let result = stream_consumer::consume_stream(rx_next, &mut sink).await;
+
+        // Handle spiral inline
+        let result = match result {
+            ConsumeResult::Spiral { .. } => {
+                stream_consumer::reprompt_after_spiral(
+                    provider, messages, Some(tools), &mut sink,
+                ).await
+            }
+            other => other,
+        };
+
+        match result {
             ConsumeResult::Reply { text, thinking } => {
-                deliver_reply(state, provider, sender, messages, tools, content, session_id, &text, &thinking).await;
+                deliver_reply(state, provider, sink.sender, messages, tools, content, session_id, &text, &thinking).await;
                 chain_reply = text;
                 stash_chain(pending_chain, chain_tools, content, &chain_reply, session_id);
                 return;
@@ -91,28 +137,29 @@ pub async fn run_l1_tool_chain(
             ConsumeResult::Escalate { objective, plan, planned_turns } => {
                 tracing::info!(objective = %objective, planned_turns, "L1 chain → Escalate");
                 stop_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                send_ws(sender, "status", &serde_json::json!({"message": format!("ReAct loop activated ({} turns planned)", planned_turns)})).await;
-                run_react_loop(state, provider, messages.clone(), &objective, plan.as_deref(), planned_turns, content, session_id, sender, stop_flag).await;
+                send_ws(sink.sender, "status", &serde_json::json!({"message": format!("ReAct loop activated ({} turns planned)", planned_turns)})).await;
+                run_react_loop(state, provider, messages.clone(), &objective, plan.as_deref(), planned_turns, content, session_id, sink.sender, stop_flag).await;
                 return;
             }
             ConsumeResult::PlanProposal { title, plan_markdown, estimated_turns } => {
                 tracing::info!(title = %title, turns = estimated_turns, "L1 chain → PlanProposal");
                 let plan = crate::web::ws_plans::save_pending_plan(session_id, &title, &plan_markdown, estimated_turns);
-                send_ws(sender, "plan_proposal", &serde_json::json!({
+                send_ws(sink.sender, "plan_proposal", &serde_json::json!({
                     "title": plan.title,
                     "plan_markdown": plan.plan_markdown,
                     "estimated_turns": plan.estimated_turns,
                     "revision": plan.revision,
                     "session_id": session_id,
                 })).await;
-                send_ws(sender, "done", &serde_json::json!({})).await;
+                send_ws(sink.sender, "done", &serde_json::json!({})).await;
                 return;
             }
             ConsumeResult::Error(e) => {
                 tracing::error!(error = %e, "L1 chain → Error");
-                send_ws(sender, "error", &serde_json::json!({"message": e})).await;
+                send_ws(sink.sender, "error", &serde_json::json!({"message": e})).await;
                 break;
             }
+            _ => {}
         }
     }
 
@@ -135,5 +182,21 @@ pub fn stash_chain(
             reply: chain_reply.to_string(),
             _session_id: session_id.to_string(),
         });
+    }
+}
+
+/// Capture a sanitizer-caught leak as a DPO rejection pair.
+/// The leaked text becomes the rejection, the clean text becomes the chosen.
+async fn capture_leak_dpo(state: &AppState, user_query: &str, chosen: &str, rejected: &str) {
+    if chosen.is_empty() || rejected.is_empty() {
+        return;
+    }
+    let mut buf = state.rejection_buffer.write().await;
+    if let Err(e) = buf.add_pair(
+        user_query, chosen, rejected, "output_sanitizer: tool output leak",
+    ) {
+        tracing::error!(error = %e, "Failed to capture leak DPO pair");
+    } else {
+        tracing::info!("DPO pair captured: tool output leak → rejection buffer");
     }
 }

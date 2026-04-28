@@ -1,98 +1,15 @@
 //! WebSocket stream consumption and observer audit utilities.
+//!
+//! NOTE: Stream consumption is now centralized in `inference::stream_consumer`.
+//! This module retains: `send_ws`, `audit_and_retry`, `save_conversation_stack`,
+//! and the observer retry infrastructure.
 
 use crate::observer;
-use crate::provider::{Message, StreamEvent};
+use crate::provider::Message;
 use crate::web::state::AppState;
 use crate::web::training_capture;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::SinkExt;
-
-/// Result of consuming a provider stream.
-pub enum ConsumeResult {
-    Reply { text: String, thinking: Option<String> },
-    Escalate { objective: String, plan: Option<String>, planned_turns: usize },
-    PlanProposal { title: String, plan_markdown: String, estimated_turns: usize },
-    ToolCall { id: String, name: String, arguments: String },
-    Error(String),
-}
-
-/// Consume provider stream silently — buffer text, only forward thinking.
-/// Text is held back until Observer approval.
-pub async fn consume_silently(
-    mut rx: tokio::sync::mpsc::Receiver<StreamEvent>,
-    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
-) -> ConsumeResult {
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut tool_calls: Vec<(String, String, String)> = Vec::new();
-    let mut event_count: u64 = 0;
-    let start = std::time::Instant::now();
-
-    while let Some(event) = rx.recv().await {
-        event_count += 1;
-        match &event {
-            StreamEvent::TextDelta(delta) => text.push_str(delta),
-            StreamEvent::ThinkingDelta(delta) => {
-                thinking.push_str(delta);
-                send_ws(sender, "thinking_delta", &serde_json::json!({"content": delta})).await;
-            }
-            StreamEvent::ToolCall { id, name, arguments } => {
-                tracing::debug!(tool = %name, id = %id, "Stream: ToolCall received");
-                tool_calls.push((id.clone(), name.clone(), arguments.clone()));
-            }
-            StreamEvent::Done => {
-                tracing::debug!(events = event_count, elapsed_ms = start.elapsed().as_millis() as u64, "Stream: Done");
-                break;
-            }
-            StreamEvent::Error(e) => {
-                tracing::error!(error = %e, events = event_count, "Stream: Error");
-                return ConsumeResult::Error(e.clone());
-            }
-        }
-    }
-
-    classify_stream_result(text, thinking, tool_calls)
-}
-
-/// Classify a completed stream into the appropriate ConsumeResult.
-fn classify_stream_result(
-    text: String,
-    thinking: String,
-    tool_calls: Vec<(String, String, String)>,
-) -> ConsumeResult {
-    if let Some((_, _, args)) = tool_calls.iter().find(|(_, name, _)| name == "propose_plan") {
-        let parsed: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
-        let turns = parsed["estimated_turns"].as_u64().unwrap_or(10) as usize;
-        tracing::info!(turns, "consume_silently result: PlanProposal");
-        return ConsumeResult::PlanProposal {
-            title: parsed["title"].as_str().unwrap_or("Plan").to_string(),
-            plan_markdown: parsed["plan_markdown"].as_str().unwrap_or("").to_string(),
-            estimated_turns: turns.max(3).min(50),
-        };
-    }
-
-    if let Some((_, _, args)) = tool_calls.iter().find(|(_, name, _)| name == "start_react_system") {
-        let parsed: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
-        let planned = parsed["planned_turns"].as_u64().unwrap_or(10) as usize;
-        tracing::info!(planned_turns = planned, "consume_silently result: Escalate");
-        return ConsumeResult::Escalate {
-            objective: parsed["objective"].as_str().unwrap_or("").to_string(),
-            plan: parsed["plan"].as_str().map(|s| s.to_string()),
-            planned_turns: planned.max(3).min(50),
-        };
-    }
-
-    if let Some((id, name, arguments)) = tool_calls.into_iter().next() {
-        tracing::info!(tool = %name, id = %id, "consume_silently result: ToolCall");
-        return ConsumeResult::ToolCall { id, name, arguments };
-    }
-
-    tracing::info!(text_len = text.len(), "consume_silently result: Reply");
-    ConsumeResult::Reply {
-        text,
-        thinking: if thinking.is_empty() { None } else { Some(thinking) },
-    }
-}
 
 /// Observer-gated audit loop: audit response, retry silently if rejected.
 /// Returns the approved text (or last attempt after max retries / bailout).
@@ -126,7 +43,10 @@ pub async fn audit_and_retry(
                     "approved": true, "confidence": output.result.confidence,
                     "category": &output.result.failure_category,
                 })).await;
-                training_capture::capture_approved(state, user_query, &current_text, output.result.confidence);
+                training_capture::capture_approved_with_flags(
+                    state, user_query, &current_text,
+                    output.result.confidence, &output.result.positive_flags,
+                );
                 // Save conversation stack from observer classification
                 save_conversation_stack(state, session_id, &output.result);
                 return current_text;
@@ -163,7 +83,7 @@ pub async fn audit_and_retry(
 /// Bailout after max rejections — force the response through with an override prompt.
 async fn handle_bailout(
     provider: &dyn crate::provider::Provider,
-    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    _sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
     messages: &mut Vec<Message>,
     tools: &serde_json::Value,
     rejected_text: &str,
@@ -175,7 +95,9 @@ async fn handle_bailout(
     messages.push(Message::text("system", &bailout));
 
     if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
-        if let ConsumeResult::Reply { text, .. } = consume_silently(rx, sender).await {
+        use crate::inference::stream_consumer::{self as sc, NullSink};
+        let mut sink = NullSink;
+        if let sc::ConsumeResult::Reply { text, .. } = sc::consume_stream(rx, &mut sink).await {
             return text;
         }
     }
@@ -206,16 +128,18 @@ async fn retry_with_feedback(
         }
     };
 
-    match consume_silently(rx, sender).await {
-        ConsumeResult::Reply { text, .. } => {
+    use crate::inference::stream_consumer::{self as sc, NullSink};
+    let mut sink = NullSink;
+    match sc::consume_stream(rx, &mut sink).await {
+        sc::ConsumeResult::Reply { text, .. } => {
             training_capture::capture_rejection(state, user_query, rejected_text, &text, reject_reason);
             text
         }
-        ConsumeResult::ToolCall { id, name, arguments } => {
+        sc::ConsumeResult::ToolCall { id, name, arguments } => {
             let tc = crate::tools::schema::ToolCall { id, name, arguments };
             execute_retry_tool_chain(state, provider, sender, messages, tools, tc).await
         }
-        ConsumeResult::Error(e) => {
+        sc::ConsumeResult::Error(e) => {
             tracing::error!(error = %e, "Observer retry: inference error");
             rejected_text.to_string()
         }
@@ -261,13 +185,15 @@ async fn execute_retry_tool_chain(
             }
         };
 
-        match consume_silently(rx, sender).await {
-            ConsumeResult::Reply { text, .. } => return text,
-            ConsumeResult::ToolCall { id, name, arguments } => {
+        use crate::inference::stream_consumer::{self as sc, NullSink};
+        let mut sink = NullSink;
+        match sc::consume_stream(rx, &mut sink).await {
+            sc::ConsumeResult::Reply { text, .. } => return text,
+            sc::ConsumeResult::ToolCall { id, name, arguments } => {
                 tracing::info!(tool = %name, iteration = iteration + 1, "Observer retry: chaining tool");
                 tc = crate::tools::schema::ToolCall { id, name, arguments };
             }
-            ConsumeResult::Error(e) => {
+            sc::ConsumeResult::Error(e) => {
                 tracing::error!(error = %e, "Observer retry: tool chain error");
                 return String::new();
             }
@@ -297,7 +223,8 @@ fn build_l1_tool_context(messages: &[Message]) -> String {
             let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
             let result_text = msg.text_content();
             let preview = if result_text.len() > 200 {
-                format!("{}...", &result_text[..200])
+                let b = result_text.char_indices().take_while(|(i,_)| *i <= 200).last().map(|(i,_)| i).unwrap_or(0);
+                format!("{}...", &result_text[..b])
             } else {
                 result_text.clone()
             };

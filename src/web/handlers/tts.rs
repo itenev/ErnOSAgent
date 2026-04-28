@@ -21,7 +21,7 @@ pub async fn synthesize(
             .body(axum::body::Body::from(
                 serde_json::json!({"error": "Missing text"}).to_string(),
             ))
-            .unwrap();
+            .expect("valid response builder");
     }
 
     let kokoro_url = format!(
@@ -45,7 +45,7 @@ pub async fn synthesize(
                 .status(200)
                 .header("content-type", "audio/wav")
                 .body(axum::body::Body::from(bytes))
-                .unwrap()
+                .expect("valid response builder")
         }
         Ok(resp) => {
             let status = resp.status().as_u16();
@@ -57,7 +57,7 @@ pub async fn synthesize(
                 .body(axum::body::Body::from(
                     serde_json::json!({"error": "Kokoro TTS error", "detail": body}).to_string(),
                 ))
-                .unwrap()
+                .expect("valid response builder")
         }
         Err(e) => {
             tracing::warn!(error = %e, "Kokoro TTS unreachable");
@@ -67,7 +67,7 @@ pub async fn synthesize(
                 .body(axum::body::Body::from(
                     serde_json::json!({"error": "Kokoro TTS server unreachable", "hint": "Start with: python start-kokoro.py"}).to_string(),
                 ))
-                .unwrap()
+                .expect("valid response builder")
         }
     }
 }

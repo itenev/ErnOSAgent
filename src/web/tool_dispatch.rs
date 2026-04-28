@@ -41,7 +41,7 @@ pub async fn execute_tool_with_state(
         "steering" => crate::tools::steering_tool::execute(&args).await,
         "interpretability" => crate::tools::interpretability_tool::execute(&args, state).await,
         "codebase_search" => crate::tools::codebase_search::execute(&args).await,
-        "file_read" => crate::tools::file_read::execute(&args).await,
+        "file_read" => crate::tools::file_read::execute(&args, state.model_spec.context_length).await,
         "file_write" => crate::tools::file_write::execute(&args).await,
         "browse_url" | "screenshot_url" | "generate_image" | "system_recompile" =>
             dispatch_desktop_tool(state, &tc.name, &args).await,
@@ -372,6 +372,15 @@ mod tests {
             )),
             resume_message: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             sae: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            live_monitor: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::interpretability::live::LiveMonitor::new(50),
+            )),
+            snapshot_store: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::interpretability::snapshot::SnapshotStore::new(
+                    &tmp.path().join("snapshots"),
+                ).unwrap(),
+            )),
+            cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let result = rt.block_on(execute_tool_with_state(&state, &tc));
         assert!(result.output.contains("Unknown tool"));

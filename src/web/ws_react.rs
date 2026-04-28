@@ -9,6 +9,33 @@ use crate::web::ws_learning::{ingest_assistant_turn, spawn_insight_extraction};
 use crate::web::ws_stream::send_ws;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 
+/// Mutable state tracked across ReAct iterations.
+struct LoopState {
+    remaining_turns: usize,
+    total_iterations: usize,
+    budget_exhausted_prompted: bool,
+    consecutive_rejections: usize,
+    last_fail_signature: Option<String>,
+    consecutive_fails: usize,
+    empty_reply_retries: usize,
+    progress: crate::inference::progress::ProgressTracker,
+}
+
+impl LoopState {
+    fn new(planned_turns: usize, session_id: &str) -> Self {
+        Self {
+            remaining_turns: planned_turns,
+            total_iterations: 0,
+            budget_exhausted_prompted: false,
+            consecutive_rejections: 0,
+            last_fail_signature: None,
+            consecutive_fails: 0,
+            empty_reply_retries: 0,
+            progress: crate::inference::progress::ProgressTracker::new(session_id),
+        }
+    }
+}
+
 /// Run the full ReAct loop with tool execution and observer audit.
 pub async fn run_react_loop(
     state: &AppState,
@@ -23,305 +50,451 @@ pub async fn run_react_loop(
     stop_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut ctx = ReactContext::new(objective, plan, base_messages);
-    let mut remaining_turns = planned_turns;
-    let mut total_iterations = 0usize;
-    let mut budget_exhausted_prompted = false;
-    let mut consecutive_rejections: usize = 0;
-    // Spiral detection: track consecutive identical failures
-    let mut last_fail_signature: Option<String> = None;
-    let mut consecutive_fails: usize = 0;
-    // Empty reply recovery: track consecutive empty ImplicitReply retries
-    let mut empty_reply_retries: usize = 0;
+    let mut ls = LoopState::new(planned_turns, session_id);
 
     loop {
-        // ─── User Stop Check ───
-        if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!(iteration = total_iterations, "ReAct loop stopped by user");
-            ctx.messages.push(Message::text("system",
-                "[USER INTERRUPT] The user has stopped this loop. \
-                 Summarize everything you have gathered so far and deliver your \
-                 best response using reply_request. Do NOT call any more tools."
-            ));
-            match react_loop::run_iteration(provider, &ctx, true).await {
-                Ok(IterationResult::Reply(reply, thinking)) | Ok(IterationResult::ImplicitReply(reply, thinking)) => {
-                    if let Some(ref t) = thinking {
-                        send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
-                    }
-                    send_ws(sender, "text_delta", &serde_json::json!({"content": &reply})).await;
-                    ingest_assistant_turn(state, &reply, session_id).await;
-                }
-                _ => {
-                    send_ws(sender, "text_delta", &serde_json::json!({"content": "(Loop stopped by user)"})).await;
-                }
-            }
-            send_ws(sender, "done", &serde_json::json!({})).await;
+        if handle_user_stop(stop_flag, &mut ctx, &ls, state, provider, sender, session_id).await {
             return;
         }
+        handle_budget_exhaustion(&mut ctx, &mut ls);
 
-        // ─── Turn Budget Exhausted ───
-        if remaining_turns == 0 && !budget_exhausted_prompted {
-            budget_exhausted_prompted = true;
-            tracing::info!(total = total_iterations, "ReAct turns exhausted — forcing assessment");
-            ctx.messages.push(Message::text("system",
-                &format!(
-                    "[TURN BUDGET EXHAUSTED] You have used all {} planned turns.\n\n\
-                     STOP. Assess your progress:\n\
-                     - What have you accomplished so far?\n\
-                     - Do you have enough information to answer the user?\n\n\
-                     You have exactly TWO options:\n\
-                     1. Call `reply_request` with your complete response if you have enough.\n\
-                     2. Call `extend_turns` with a progress summary, what work remains, and a NEW turn estimate.\n\n\
-                     You MUST NOT call any other tool. Assess and decide.",
-                    total_iterations
-                )
-            ));
-        }
+        tracing::info!(iteration = ls.total_iterations, remaining = ls.remaining_turns, "ReAct iteration");
+        state.cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
 
-        tracing::info!(iteration = total_iterations, remaining = remaining_turns, "ReAct iteration");
-
-        match react_loop::run_iteration(provider, &ctx, true).await {
+        match react_loop::run_iteration_cancellable(provider, &ctx, true, Some(&state.cancel_flag)).await {
             Ok(IterationResult::Reply(reply, thinking)) => {
-                tracing::info!(
-                    iteration = total_iterations,
-                    reply_len = reply.len(),
-                    thinking_len = thinking.as_ref().map(|t| t.len()).unwrap_or(0),
-                    reply_preview = %reply.chars().take(200).collect::<String>(),
-                    "ReAct: Reply (via reply_request)"
-                );
-                if let Some(ref t) = thinking {
-                    send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
+                if handle_reply(state, provider, &mut ctx, &mut ls, &reply, &thinking, user_query, session_id, sender).await {
+                    return;
                 }
-                if state.config.observer.enabled {
-                    send_ws(sender, "audit_running", &serde_json::json!({})).await;
-                    let tool_context = build_tool_context(&ctx.messages);
-                    match observer::audit_response(provider, &ctx.messages, &reply, &tool_context, user_query).await {
-                        Ok(output) if !output.result.verdict.is_allowed() => {
-                            consecutive_rejections += 1;
-                            tracing::info!(
-                                category = %output.result.failure_category,
-                                reason = %output.result.what_went_wrong,
-                                consecutive = consecutive_rejections,
-                                "ReAct reply rejected — retrying"
-                            );
-
-                            // Bailout after 2 consecutive rejections
-                            if consecutive_rejections >= 2 {
-                                tracing::warn!(rejections = consecutive_rejections, "ReAct observer bailout — forcing response");
-                                let bailout = observer::format_bailout_override(consecutive_rejections);
-                                ctx.messages.push(Message::text("system", &bailout));
-                                // Fall through to deliver the reply
-                            } else {
-                                // Push the rejected reply so the model can see what it said
-                                ctx.messages.push(Message::text("assistant", &reply));
-                                ctx.add_rejection_feedback(&output.result);
-                                continue;
-                            }
-                        }
-                        Ok(output) => {
-                            send_ws(sender, "audit_completed", &serde_json::json!({
-                                "approved": true,
-                                "confidence": output.result.confidence,
-                                "category": &output.result.failure_category,
-                            })).await;
-                            // Save conversation stack from observer classification
-                            crate::web::ws_stream::save_conversation_stack(state, session_id, &output.result);
-                        }
-                        Err(e) => tracing::warn!(error = %e, "Observer failed — fail-open"),
-                    }
-                }
-                send_ws(sender, "text_delta", &serde_json::json!({"content": &reply})).await;
-                ingest_assistant_turn(state, &reply, session_id).await;
-                spawn_insight_extraction(state, user_query, &reply);
-                send_ws(sender, "done", &serde_json::json!({})).await;
-                return;
             }
             Ok(IterationResult::Refuse(reason)) => {
-                tracing::info!(iteration = total_iterations, reason = %reason, "ReAct: Refuse");
-                send_ws(sender, "text_delta", &serde_json::json!({"content": format!("I cannot complete this: {}", reason)})).await;
-                send_ws(sender, "done", &serde_json::json!({})).await;
+                handle_refuse(&reason, &ls, sender).await;
                 return;
             }
             Ok(IterationResult::ExtendTurns { additional, progress, remaining_work }) => {
-                let granted = additional;
-                remaining_turns = granted;
-                budget_exhausted_prompted = false;
-                tracing::info!(
-                    granted, progress = %progress,
-                    remaining_work = %remaining_work,
-                    "ReAct extension granted after assessment"
-                );
-                send_ws(sender, "status", &serde_json::json!({
-                    "message": format!("ReAct extended (+{} turns after assessment)", granted)
-                })).await;
-                ctx.messages.push(Message::text("system",
-                    &format!(
-                        "[EXTENSION GRANTED] You have been granted {} additional turns. \
-                         Continue with your plan. Remaining work: {}",
-                        granted, remaining_work
-                    )
-                ));
+                handle_extend_turns(&mut ctx, &mut ls, additional, &progress, &remaining_work, sender).await;
             }
             Ok(IterationResult::ToolCall(tc)) => {
-                tracing::info!(iteration = total_iterations, tool = %tc.name, remaining = remaining_turns, "ReAct: ToolCall");
-                if remaining_turns == 0 {
-                    tracing::warn!(tool = %tc.name, "Model tried to call tool with 0 budget — rejecting");
-                    ctx.messages.push(Message::assistant_tool_call(&tc.id, &tc.name, &tc.arguments));
-                    ctx.messages.push(Message::tool_result(&tc.id,
-                        "[REJECTED] Your turn budget is exhausted. You must call `reply_request` \
-                         to deliver your response, or `extend_turns` to request more turns. \
-                         No other tools are available until you assess and decide."
-                    ));
-                    continue;
-                }
-                send_ws(sender, "tool_executing", &serde_json::json!({"name": &tc.name, "id": &tc.id})).await;
-                let result = if tc.name == "spawn_sub_agent" {
-                    execute_sub_agent(state, provider, &tc, sender).await
-                } else {
-                    execute_tool_with_state(state, &tc).await
-                };
-                send_ws(sender, "tool_completed", &serde_json::json!({
-                    "id": &tc.id, "name": &tc.name,
-                    "result": &result.output, "success": result.success,
-                })).await;
-                // Emit artifact card if this was a successful create_artifact call
-                if tc.name == "create_artifact" && result.success {
-                    if let Ok(artifact) = serde_json::from_str::<serde_json::Value>(&result.output) {
-                        send_ws(sender, "artifact_created", &artifact).await;
-                    }
-                }
-                // Spiral detection: track consecutive identical failures
-                if !result.success {
-                    let sig = format!("{}:{}", tc.name, result.output);
-                    if last_fail_signature.as_deref() == Some(&sig) {
-                        consecutive_fails += 1;
-                    } else {
-                        last_fail_signature = Some(sig);
-                        consecutive_fails = 1;
-                    }
-                    if consecutive_fails >= 3 {
-                        tracing::warn!(
-                            tool = %tc.name, consecutive = consecutive_fails,
-                            "Degenerate tool spiral detected — injecting feedback"
-                        );
-                        ctx.messages.push(Message::text("system", &format!(
-                            "[PATTERN DETECTED] You have called `{}` {} times in a row with the same \
-                             error: \"{}\". Stop calling it. Reassess your approach and try a different \
-                             strategy, or call `reply_request` with what you have.",
-                            tc.name, consecutive_fails, result.output
-                        )));
-                    }
-                } else {
-                    last_fail_signature = None;
-                    consecutive_fails = 0;
-                }
-                ctx.add_tool_result(&tc, result);
-                // Auto-verify: after code-modifying tools, remind agent to verify
-                if matches!(tc.name.as_str(), "codebase_edit" | "file_write") {
-                    ctx.messages.push(Message::text("system",
-                        "[AUTO-VERIFY HINT] You just modified code. Consider calling `verify_code` \
-                         to confirm build + tests pass before proceeding. If verify fails, fix errors \
-                         and re-verify until clean."
-                    ));
-                }
-                remaining_turns = remaining_turns.saturating_sub(1);
-                total_iterations += 1;
+                handle_single_tool(&mut ctx, &mut ls, state, &tc, provider, sender).await;
             }
             Ok(IterationResult::ToolCalls(tcs)) => {
-                tracing::info!(
-                    iteration = total_iterations,
-                    count = tcs.len(),
-                    remaining = remaining_turns,
-                    tools = %tcs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
-                    "ReAct: ToolCalls (parallel)"
-                );
-                if remaining_turns == 0 {
-                    tracing::warn!(count = tcs.len(), "Model tried parallel calls with 0 budget — rejecting all");
-                    let call_refs: Vec<_> = tcs.iter()
-                        .map(|tc| (tc.id.as_str(), tc.name.as_str(), tc.arguments.as_str()))
-                        .collect();
-                    ctx.messages.push(Message::assistant_tool_calls(&call_refs));
-                    for tc in &tcs {
-                        ctx.messages.push(Message::tool_result(&tc.id,
-                            "[REJECTED] Turn budget exhausted. Call reply_request or extend_turns."
-                        ));
-                    }
-                    continue;
-                }
-                tracing::info!(
-                    count = tcs.len(),
-                    tools = %tcs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
-                    "Executing parallel tool calls"
-                );
-                for tc in &tcs {
-                    send_ws(sender, "tool_executing", &serde_json::json!({"name": &tc.name, "id": &tc.id})).await;
-                }
-                let futs: Vec<_> = tcs.iter()
-                    .map(|tc| execute_tool_with_state(state, tc))
-                    .collect();
-                let results = futures::future::join_all(futs).await;
-                for (i, result) in results.iter().enumerate() {
-                    send_ws(sender, "tool_completed", &serde_json::json!({
-                        "id": &result.tool_call_id, "name": &result.name,
-                        "result": &result.output, "success": result.success,
-                    })).await;
-                    if tcs[i].name == "create_artifact" && result.success {
-                        if let Ok(artifact) = serde_json::from_str::<serde_json::Value>(&result.output) {
-                            send_ws(sender, "artifact_created", &artifact).await;
-                        }
-                    }
-                }
-                // Reset spiral tracker on parallel calls (mixed success/fail)
-                last_fail_signature = None;
-                consecutive_fails = 0;
-                let pairs: Vec<_> = tcs.iter().zip(results.into_iter()).collect();
-                ctx.add_tool_results(pairs);
-                remaining_turns = remaining_turns.saturating_sub(1);
-                total_iterations += 1;
+                handle_parallel_tools(&mut ctx, &mut ls, state, &tcs, sender).await;
             }
             Ok(IterationResult::ImplicitReply(text, thinking)) => {
-                tracing::info!(
-                    iteration = total_iterations,
-                    text_len = text.len(),
-                    text_empty = text.trim().is_empty(),
-                    thinking_len = thinking.as_ref().map(|t| t.len()).unwrap_or(0),
-                    text_preview = %text.chars().take(200).collect::<String>(),
-                    "ReAct: ImplicitReply (no tool calls — model returned raw text)"
-                );
-                // Empty reply recovery: retry up to 2 times before giving up
-                if text.trim().is_empty() {
-                    empty_reply_retries += 1;
-                    tracing::warn!(
-                        iteration = total_iterations,
-                        retry = empty_reply_retries,
-                        "ReAct: ImplicitReply text is EMPTY — model produced no output"
-                    );
-                    if empty_reply_retries <= 2 {
-                        ctx.messages.push(Message::text("system",
-                            "[EMPTY RESPONSE DETECTED] You returned no text and no tool calls. \
-                             You MUST either call `reply_request` with your response, or call a tool. \
-                             Do NOT return empty. Deliver your report now via `reply_request`."
-                        ));
-                        continue;
-                    }
-                    // After 2 retries, fall through and deliver whatever we have
-                    tracing::error!(iteration = total_iterations, "ReAct: Empty reply after 2 retries — forcing completion");
+                if handle_implicit_reply(&mut ctx, &mut ls, state, &text, &thinking, user_query, session_id, sender).await {
+                    return;
                 }
-                if let Some(ref t) = thinking {
-                    send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
-                }
-                send_ws(sender, "text_delta", &serde_json::json!({"content": &text})).await;
-                ingest_assistant_turn(state, &text, session_id).await;
-                spawn_insight_extraction(state, user_query, &text);
-                send_ws(sender, "done", &serde_json::json!({})).await;
-                return;
             }
             Err(e) => {
-                tracing::error!(error = ?e, iteration = total_iterations, "ReAct iteration inference failed (full chain)");
-                send_ws(sender, "error", &serde_json::json!({"message": format!("ReAct error: {}", e)})).await;
-                send_ws(sender, "done", &serde_json::json!({})).await;
+                handle_iteration_error(&e, &ls, sender).await;
                 return;
             }
         }
+    }
+}
+
+/// Handle user stop: if flagged, force a final reply and return true.
+async fn handle_user_stop(
+    stop_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ctx: &mut ReactContext,
+    ls: &LoopState,
+    state: &AppState,
+    provider: &dyn crate::provider::Provider,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    session_id: &str,
+) -> bool {
+    if !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    tracing::info!(iteration = ls.total_iterations, "ReAct loop stopped by user");
+    ctx.messages.push(Message::text("system",
+        "[USER INTERRUPT] The user has stopped this loop. \
+         Summarize everything you have gathered so far and deliver your \
+         best response using reply_request. Do NOT call any more tools."
+    ));
+    match react_loop::run_iteration(provider, ctx, true).await {
+        Ok(IterationResult::Reply(reply, thinking)) | Ok(IterationResult::ImplicitReply(reply, thinking)) => {
+            if let Some(ref t) = thinking {
+                send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
+            }
+            send_ws(sender, "text_delta", &serde_json::json!({"content": &reply})).await;
+            ingest_assistant_turn(state, &reply, session_id).await;
+        }
+        _ => {
+            send_ws(sender, "text_delta", &serde_json::json!({"content": "(Loop stopped by user)"})).await;
+        }
+    }
+    send_ws(sender, "done", &serde_json::json!({})).await;
+    true
+}
+
+/// Check if turn budget is exhausted and inject assessment prompt.
+fn handle_budget_exhaustion(ctx: &mut ReactContext, ls: &mut LoopState) {
+    if ls.remaining_turns != 0 || ls.budget_exhausted_prompted {
+        return;
+    }
+    ls.budget_exhausted_prompted = true;
+    tracing::info!(total = ls.total_iterations, "ReAct turns exhausted — forcing assessment");
+    ctx.messages.push(Message::text("system",
+        &format!(
+            "[TURN BUDGET EXHAUSTED] You have used all {} planned turns.\n\n\
+             STOP. Assess your progress:\n\
+             - What have you accomplished so far?\n\
+             - Do you have enough information to answer the user?\n\n\
+             You have exactly TWO options:\n\
+             1. Call `reply_request` with your complete response if you have enough.\n\
+             2. Call `extend_turns` with a progress summary, what work remains, and a NEW turn estimate.\n\n\
+             You MUST NOT call any other tool. Assess and decide.",
+            ls.total_iterations
+        )
+    ));
+}
+
+/// Handle a Reply result with observer audit. Returns true if loop should exit.
+async fn handle_reply(
+    state: &AppState,
+    provider: &dyn crate::provider::Provider,
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    reply: &str,
+    thinking: &Option<String>,
+    user_query: &str,
+    session_id: &str,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) -> bool {
+    tracing::info!(
+        iteration = ls.total_iterations,
+        reply_len = reply.len(),
+        thinking_len = thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+        reply_preview = %reply.chars().take(200).collect::<String>(),
+        "ReAct: Reply (via reply_request)"
+    );
+    if let Some(ref t) = thinking {
+        send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
+    }
+    if state.config.observer.enabled {
+        if !run_observer_audit(state, provider, ctx, ls, reply, user_query, session_id, sender).await {
+            return false; // Rejected — continue loop
+        }
+    }
+    deliver_final_reply(state, reply, user_query, session_id, sender).await;
+    true
+}
+
+/// Run observer audit on a reply. Returns true if approved (or bail-out), false if rejected.
+async fn run_observer_audit(
+    state: &AppState,
+    provider: &dyn crate::provider::Provider,
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    reply: &str,
+    user_query: &str,
+    session_id: &str,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) -> bool {
+    send_ws(sender, "audit_running", &serde_json::json!({})).await;
+    use crate::inference::react_observer::{audit_reply, ObserverVerdict};
+    match audit_reply(provider, &ctx.messages, reply, state.config.observer.enabled, user_query).await {
+        Ok(ObserverVerdict::Approved) => {
+            send_ws(sender, "audit_completed", &serde_json::json!({"approved": true})).await;
+            // Also run the full audit for conversation stack + training capture
+            let tool_context = build_tool_context(&ctx.messages);
+            if let Ok(output) = observer::audit_response(provider, &ctx.messages, reply, &tool_context, user_query).await {
+                crate::web::ws_stream::save_conversation_stack(state, session_id, &output.result);
+            }
+            true
+        }
+        Ok(ObserverVerdict::Rejected { reason, guidance }) => {
+            ls.consecutive_rejections += 1;
+            tracing::info!(
+                reason = %reason, guidance = %guidance,
+                consecutive = ls.consecutive_rejections,
+                "ReAct reply rejected — retrying"
+            );
+            if ls.consecutive_rejections >= 2 {
+                tracing::warn!(rejections = ls.consecutive_rejections, "ReAct observer bailout — forcing response");
+                let bailout = observer::format_bailout_override(ls.consecutive_rejections);
+                ctx.messages.push(Message::text("system", &bailout));
+                true
+            } else {
+                ctx.messages.push(Message::text("assistant", reply));
+                let feedback = observer::format_rejection_feedback_from_reason(&reason, &guidance);
+                ctx.messages.push(Message::text("system", &feedback));
+                false
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Observer failed — fail-open");
+            true
+        }
+    }
+}
+
+/// Deliver a final reply to the user and clean up.
+async fn deliver_final_reply(
+    state: &AppState,
+    reply: &str,
+    user_query: &str,
+    session_id: &str,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    send_ws(sender, "text_delta", &serde_json::json!({"content": reply})).await;
+    ingest_assistant_turn(state, reply, session_id).await;
+    spawn_insight_extraction(state, user_query, reply);
+    spawn_skill_synthesis(state, user_query);
+    send_ws(sender, "done", &serde_json::json!({})).await;
+}
+
+/// Background skill synthesis after ReAct loop completion.
+/// Extracts reusable procedural skills from the tool execution history.
+fn spawn_skill_synthesis(state: &AppState, user_query: &str) {
+    let provider = state.provider.clone();
+    let memory = state.memory.clone();
+    let query = user_query.to_string();
+
+    tokio::spawn(async move {
+        // Collect recent tool usage from memory for synthesis
+        let tool_history: Vec<(String, String)> = {
+            let mem = memory.read().await;
+            mem.procedures.recent_tool_usage(10)
+        };
+
+        if !crate::observer::skills::is_skill_worthy(tool_history.len()) {
+            return;
+        }
+
+        match crate::observer::skills::synthesise_skill(provider.as_ref(), &query, &tool_history).await {
+            Ok(Some(skill)) => {
+                tracing::info!(skill = %skill.name, confidence = skill.confidence, "Skill synthesised");
+                let mut mem = memory.write().await;
+                let _ = mem.procedures.record_skill(&skill.name, &skill.description);
+            }
+            Ok(None) => tracing::debug!("No reusable skill extracted"),
+            Err(e) => tracing::warn!(error = %e, "Skill synthesis failed"),
+        }
+    });
+}
+
+/// Handle a Refuse result.
+async fn handle_refuse(
+    reason: &str,
+    ls: &LoopState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    tracing::info!(iteration = ls.total_iterations, reason = %reason, "ReAct: Refuse");
+    send_ws(sender, "text_delta", &serde_json::json!({"content": format!("I cannot complete this: {}", reason)})).await;
+    send_ws(sender, "done", &serde_json::json!({})).await;
+}
+
+/// Handle an ExtendTurns result.
+async fn handle_extend_turns(
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    additional: usize,
+    progress: &str,
+    remaining_work: &str,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    ls.remaining_turns = additional;
+    ls.budget_exhausted_prompted = false;
+    tracing::info!(granted = additional, progress = %progress, remaining_work = %remaining_work, "ReAct extension granted");
+    send_ws(sender, "status", &serde_json::json!({
+        "message": format!("ReAct extended (+{} turns after assessment)", additional)
+    })).await;
+    ctx.messages.push(Message::text("system",
+        &format!(
+            "[EXTENSION GRANTED] You have been granted {} additional turns. \
+             Continue with your plan. Remaining work: {}",
+            additional, remaining_work
+        )
+    ));
+}
+
+/// Handle a single ToolCall result.
+async fn handle_single_tool(
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    state: &AppState,
+    tc: &schema::ToolCall,
+    provider: &dyn crate::provider::Provider,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    tracing::info!(iteration = ls.total_iterations, tool = %tc.name, remaining = ls.remaining_turns, "ReAct: ToolCall");
+    if reject_if_budget_exhausted(ctx, ls, tc) { return; }
+
+    send_ws(sender, "tool_executing", &serde_json::json!({"name": &tc.name, "id": &tc.id})).await;
+    let result = if tc.name == "spawn_sub_agent" {
+        execute_sub_agent(state, provider, tc, sender).await
+    } else {
+        execute_tool_with_state(state, tc).await
+    };
+    send_ws(sender, "tool_completed", &serde_json::json!({
+        "id": &tc.id, "name": &tc.name,
+        "result": &result.output, "success": result.success,
+    })).await;
+    emit_artifact_card(&tc.name, &result, sender).await;
+    track_spiral(ls, &tc.name, &result);
+    ctx.add_tool_result(tc, result);
+    emit_auto_verify_hint(ctx, &tc.name);
+    ls.remaining_turns = ls.remaining_turns.saturating_sub(1);
+    ls.total_iterations += 1;
+}
+
+/// Reject a tool call if budget is exhausted. Returns true if rejected.
+fn reject_if_budget_exhausted(ctx: &mut ReactContext, ls: &LoopState, tc: &schema::ToolCall) -> bool {
+    if ls.remaining_turns > 0 { return false; }
+    tracing::warn!(tool = %tc.name, "Model tried to call tool with 0 budget — rejecting");
+    ctx.messages.push(Message::assistant_tool_call(&tc.id, &tc.name, &tc.arguments));
+    ctx.messages.push(Message::tool_result(&tc.id,
+        "[REJECTED] Your turn budget is exhausted. You must call `reply_request` \
+         to deliver your response, or `extend_turns` to request more turns. \
+         No other tools are available until you assess and decide."
+    ));
+    true
+}
+
+/// Handle parallel ToolCalls.
+async fn handle_parallel_tools(
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    state: &AppState,
+    tcs: &[schema::ToolCall],
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    tracing::info!(
+        iteration = ls.total_iterations,
+        count = tcs.len(),
+        remaining = ls.remaining_turns,
+        tools = %tcs.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+        "ReAct: ToolCalls (parallel)"
+    );
+    if reject_parallel_if_budget_exhausted(ctx, ls, tcs) { return; }
+
+    for tc in tcs {
+        send_ws(sender, "tool_executing", &serde_json::json!({"name": &tc.name, "id": &tc.id})).await;
+    }
+    let futs: Vec<_> = tcs.iter().map(|tc| execute_tool_with_state(state, tc)).collect();
+    let results = futures::future::join_all(futs).await;
+    for (i, result) in results.iter().enumerate() {
+        send_ws(sender, "tool_completed", &serde_json::json!({
+            "id": &result.tool_call_id, "name": &result.name,
+            "result": &result.output, "success": result.success,
+        })).await;
+        emit_artifact_card(&tcs[i].name, result, sender).await;
+    }
+    ls.last_fail_signature = None;
+    ls.consecutive_fails = 0;
+    let pairs: Vec<_> = tcs.iter().zip(results.into_iter()).collect();
+    ctx.add_tool_results(pairs);
+    ls.remaining_turns = ls.remaining_turns.saturating_sub(1);
+    ls.total_iterations += 1;
+}
+
+/// Reject all parallel tool calls if budget is exhausted.
+fn reject_parallel_if_budget_exhausted(ctx: &mut ReactContext, ls: &LoopState, tcs: &[schema::ToolCall]) -> bool {
+    if ls.remaining_turns > 0 { return false; }
+    tracing::warn!(count = tcs.len(), "Model tried parallel calls with 0 budget — rejecting all");
+    let call_refs: Vec<_> = tcs.iter()
+        .map(|tc| (tc.id.as_str(), tc.name.as_str(), tc.arguments.as_str()))
+        .collect();
+    ctx.messages.push(Message::assistant_tool_calls(&call_refs));
+    for tc in tcs {
+        ctx.messages.push(Message::tool_result(&tc.id,
+            "[REJECTED] Turn budget exhausted. Call reply_request or extend_turns."
+        ));
+    }
+    true
+}
+
+/// Handle ImplicitReply (model returned text without tool calls). Returns true if loop should exit.
+async fn handle_implicit_reply(
+    ctx: &mut ReactContext,
+    ls: &mut LoopState,
+    state: &AppState,
+    text: &str,
+    thinking: &Option<String>,
+    user_query: &str,
+    session_id: &str,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) -> bool {
+    tracing::info!(
+        iteration = ls.total_iterations,
+        text_len = text.len(),
+        text_empty = text.trim().is_empty(),
+        "ReAct: ImplicitReply"
+    );
+    if text.trim().is_empty() {
+        ls.empty_reply_retries += 1;
+        tracing::warn!(iteration = ls.total_iterations, retry = ls.empty_reply_retries, "ReAct: Empty ImplicitReply");
+        if ls.empty_reply_retries <= 2 {
+            ctx.messages.push(Message::text("system",
+                "[EMPTY RESPONSE DETECTED] You returned no text and no tool calls. \
+                 You MUST either call `reply_request` with your response, or call a tool. \
+                 Do NOT return empty. Deliver your report now via `reply_request`."
+            ));
+            return false; // Retry
+        }
+        tracing::error!(iteration = ls.total_iterations, "ReAct: Empty reply after 2 retries — forcing completion");
+    }
+    if let Some(ref t) = thinking {
+        send_ws(sender, "thinking_delta", &serde_json::json!({"content": t})).await;
+    }
+    deliver_final_reply(state, text, user_query, session_id, sender).await;
+    true
+}
+
+/// Handle an iteration error.
+async fn handle_iteration_error(
+    e: &anyhow::Error,
+    ls: &LoopState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    tracing::error!(error = ?e, iteration = ls.total_iterations, "ReAct iteration inference failed");
+    send_ws(sender, "error", &serde_json::json!({"message": format!("ReAct error: {}", e)})).await;
+    send_ws(sender, "done", &serde_json::json!({})).await;
+}
+
+/// Track spiral detection: consecutive identical tool failures.
+fn track_spiral(ls: &mut LoopState, tool_name: &str, result: &schema::ToolResult) {
+    if !result.success {
+        let sig = format!("{}:{}", tool_name, result.output);
+        if ls.last_fail_signature.as_deref() == Some(&sig) {
+            ls.consecutive_fails += 1;
+            // This is a retry of the same failure — count as auto-fix attempt
+            ls.progress.error_auto_fixed();
+        } else {
+            ls.last_fail_signature = Some(sig);
+            ls.consecutive_fails = 1;
+        }
+        ls.progress.task_failed(tool_name);
+    } else {
+        ls.last_fail_signature = None;
+        ls.consecutive_fails = 0;
+        ls.progress.task_completed(tool_name);
+    }
+}
+
+/// Emit artifact card if this was a successful create_artifact call.
+async fn emit_artifact_card(
+    tool_name: &str,
+    result: &schema::ToolResult,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    if tool_name == "create_artifact" && result.success {
+        if let Ok(artifact) = serde_json::from_str::<serde_json::Value>(&result.output) {
+            send_ws(sender, "artifact_created", &artifact).await;
+        }
+    }
+}
+
+/// Inject auto-verify hint after code-modifying tools.
+fn emit_auto_verify_hint(ctx: &mut ReactContext, tool_name: &str) {
+    if matches!(tool_name, "codebase_edit" | "file_write") {
+        ctx.messages.push(Message::text("system",
+            "[AUTO-VERIFY HINT] You just modified code. Consider calling `verify_code` \
+             to confirm build + tests pass before proceeding. If verify fails, fix errors \
+             and re-verify until clean."
+        ));
     }
 }
 
@@ -403,39 +576,14 @@ async fn execute_sub_agent(
 }
 
 /// Build a concise tool context string from the message history for the observer.
-/// Scans for tool result messages and matches them to their assistant tool_call,
-/// producing a summary like: "[1] tool_name → result_preview"
 fn build_tool_context(messages: &[Message]) -> String {
     let mut entries: Vec<String> = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
         if msg.role == "tool" {
             let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
             let result_text = msg.text_content();
-            let result_preview = if result_text.len() > 200 {
-                format!("{}...", &result_text[..200])
-            } else {
-                result_text.to_string()
-            };
-
-            // Find the matching tool call in preceding assistant messages
-            let mut tool_name = "unknown".to_string();
-            for j in (0..i).rev() {
-                if messages[j].role == "assistant" {
-                    if let Some(tcs) = &messages[j].tool_calls {
-                        for tc in tcs {
-                            if tc["id"].as_str() == Some(tool_call_id) {
-                                tool_name = tc["function"]["name"]
-                                    .as_str()
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                break;
-                            }
-                        }
-                        if tool_name != "unknown" { break; }
-                    }
-                }
-            }
-
+            let result_preview = truncate_preview(&result_text, 200);
+            let tool_name = find_tool_name(messages, i, tool_call_id);
             entries.push(format!("[{}] {} → {}", entries.len() + 1, tool_name, result_preview));
         }
     }
@@ -447,3 +595,35 @@ fn build_tool_context(messages: &[Message]) -> String {
     }
 }
 
+/// Truncate a string to a preview length at a character boundary.
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        text.to_string()
+    } else {
+        let boundary = text.char_indices()
+            .take_while(|(i, _)| *i <= max_chars)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        format!("{}...", &text[..boundary])
+    }
+}
+
+/// Find the tool name for a given tool_call_id by scanning preceding messages.
+fn find_tool_name(messages: &[Message], current_idx: usize, tool_call_id: &str) -> String {
+    for j in (0..current_idx).rev() {
+        if messages[j].role == "assistant" {
+            if let Some(tcs) = &messages[j].tool_calls {
+                for tc in tcs {
+                    if tc["id"].as_str() == Some(tool_call_id) {
+                        return tc["function"]["name"]
+                            .as_str()
+                            .unwrap_or("unknown")
+                            .to_string();
+                    }
+                }
+            }
+        }
+    }
+    "unknown".to_string()
+}

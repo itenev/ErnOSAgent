@@ -49,41 +49,12 @@ async fn handle_voice(socket: WebSocket, state: AppState) {
 
         match msg {
             WsMessage::Binary(audio_data) => {
-                let result = process_voice_turn(
-                    &state, &mut conversation, &audio_data, &session_id,
-                ).await;
-
-                match result {
-                    Ok((transcript, response, tts_audio)) => {
-                        // Send transcript
-                        let t = serde_json::json!({
-                            "type": "transcript",
-                            "text": transcript,
-                            "response": response,
-                        });
-                        let _ = sender.send(WsMessage::Text(t.to_string().into())).await;
-
-                        // Send TTS audio if available
-                        if let Some(audio) = tts_audio {
-                            let _ = sender.send(WsMessage::Binary(audio.into())).await;
-                        }
-                    }
-                    Err(e) => {
-                        let err = serde_json::json!({
-                            "type": "voice_error",
-                            "error": e.to_string(),
-                        });
-                        let _ = sender.send(WsMessage::Text(err.to_string().into())).await;
-                    }
-                }
+                handle_audio_message(&state, &mut sender, &mut conversation, &audio_data, &session_id).await;
             }
             WsMessage::Text(text) => {
-                // Handle control messages (mute, config, etc.)
-                if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if ctrl["type"].as_str() == Some("voice_end") {
-                        tracing::info!(session = %session_id, "Voice call ended by client");
-                        break;
-                    }
+                if should_end_call(&text) {
+                    tracing::info!(session = %session_id, "Voice call ended by client");
+                    break;
                 }
             }
             WsMessage::Close(_) => break,
@@ -91,14 +62,57 @@ async fn handle_voice(socket: WebSocket, state: AppState) {
         }
     }
 
-    // Ingest into memory
+    ingest_voice_session(&state, &conversation, &session_id).await;
+    tracing::info!(session = %session_id, "Voice call disconnected");
+}
+
+/// Process an audio binary message: transcribe, infer, TTS, send back.
+async fn handle_audio_message(
+    state: &AppState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    conversation: &mut Vec<Message>,
+    audio_data: &[u8],
+    session_id: &str,
+) {
+    let result = process_voice_turn(state, conversation, audio_data, session_id).await;
+
+    match result {
+        Ok((transcript, response, tts_audio)) => {
+            let t = serde_json::json!({
+                "type": "transcript",
+                "text": transcript,
+                "response": response,
+            });
+            let _ = sender.send(WsMessage::Text(t.to_string().into())).await;
+
+            if let Some(audio) = tts_audio {
+                let _ = sender.send(WsMessage::Binary(audio.into())).await;
+            }
+        }
+        Err(e) => {
+            let err = serde_json::json!({
+                "type": "voice_error",
+                "error": e.to_string(),
+            });
+            let _ = sender.send(WsMessage::Text(err.to_string().into())).await;
+        }
+    }
+}
+
+/// Check if the client sent a voice_end control message.
+fn should_end_call(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .map(|ctrl| ctrl["type"].as_str() == Some("voice_end"))
+        .unwrap_or(false)
+}
+
+/// Ingest the voice conversation into memory.
+async fn ingest_voice_session(state: &AppState, conversation: &[Message], session_id: &str) {
     let turns = conversation.len().saturating_sub(1);
     if turns > 0 {
         let mut mem = state.memory.write().await;
-        mem.ingest_turn("system", &format!("[Voice call: {} turns]", turns), &session_id);
+        mem.ingest_turn("system", &format!("[Voice call: {} turns]", turns), session_id);
     }
-
-    tracing::info!(session = %session_id, "Voice call disconnected");
 }
 
 /// Process a single voice turn: audio → transcription → inference → TTS.

@@ -8,9 +8,31 @@ use crate::web::state::AppState;
 
 /// Capture an approved response as a golden training sample. Fire-and-forget.
 pub fn capture_approved(state: &AppState, query: &str, response: &str, score: f32) {
+    capture_approved_with_flags(state, query, response, score, &[]);
+}
+
+/// Capture an approved response with positive deviation flags.
+/// Each positive flag boosts the quality score by 0.02 (capped at 1.0),
+/// reinforcing exemplary behaviors in the training pipeline.
+pub fn capture_approved_with_flags(
+    state: &AppState, query: &str, response: &str, score: f32, positive_flags: &[String],
+) {
     let golden = state.golden_buffer.clone();
     let query = query.to_string();
     let response = response.to_string();
+
+    // Boost quality score for responses with positive deviation flags
+    let boost = positive_flags.len() as f32 * 0.02;
+    let final_score = (score + boost).min(1.0);
+
+    if !positive_flags.is_empty() {
+        tracing::info!(
+            flags = ?positive_flags,
+            base_score = score,
+            boosted_score = final_score,
+            "Positive deviation detected — boosting training quality"
+        );
+    }
 
     tokio::spawn(async move {
         let sample = TrainingSample {
@@ -18,7 +40,7 @@ pub fn capture_approved(state: &AppState, query: &str, response: &str, score: f3
             input: query,
             output: response,
             method: TrainingMethod::Sft,
-            quality_score: score,
+            quality_score: final_score,
             timestamp: chrono::Utc::now(),
         };
         let mut buf = golden.write().await;

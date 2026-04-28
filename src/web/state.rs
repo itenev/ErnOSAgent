@@ -16,6 +16,8 @@ use tokio::sync::RwLock;
 use crate::tools::browser_tool::BrowserState;
 use crate::platform::registry::PlatformRegistry;
 use crate::interpretability::sae::SparseAutoencoder;
+use crate::interpretability::live::LiveMonitor;
+use crate::interpretability::snapshot::SnapshotStore;
 
 /// Shared application state passed to all Axum handlers.
 /// Designed for horizontal scaling — all state behind Arc+RwLock.
@@ -40,4 +42,13 @@ pub struct AppState {
     pub resume_message: Arc<RwLock<Option<String>>>,
     /// SAE for interpretability — loaded lazily from models/sae/
     pub sae: Arc<RwLock<Option<SparseAutoencoder>>>,
+    /// Live SAE feature activation monitor — rolling window of recent activations.
+    pub live_monitor: Arc<RwLock<LiveMonitor>>,
+    /// Neural state snapshots — persisted to data/snapshots/
+    pub snapshot_store: Arc<RwLock<SnapshotStore>>,
+    /// Inference cancellation flag — shared across all platforms (WebUI, Discord).
+    /// Set to true to abort a running inference stream. Reset to false before
+    /// each new inference call. Uses AtomicBool instead of CancellationToken
+    /// because the flag must be resettable (CancellationToken is single-use).
+    pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 }

@@ -150,7 +150,11 @@ pub async fn send_direction(
         "direction": direction,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
-    let _ = tokio::fs::write(&file, serde_json::to_string(&payload).unwrap()).await;
+    let serialized = serde_json::to_string(&payload).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to serialize agent direction");
+        format!("{{\"error\": \"{}\"}}", e)
+    });
+    let _ = tokio::fs::write(&file, serialized).await;
     tracing::info!(agent = %id, direction_len = direction.len(), "Prompt direction sent to agent");
     Json(serde_json::json!({"ok": true, "agent_id": id}))
 }

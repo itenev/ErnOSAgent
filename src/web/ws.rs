@@ -21,62 +21,56 @@ pub async fn ws_handler(
 /// Handle a single WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
-
     tracing::info!("WebSocket client connected");
 
-    // Send welcome message with model info
+    if send_welcome(&state, &mut sender).await.is_err() { return; }
+    deliver_resume_if_pending(&state, &mut sender).await;
+
+    let mut pending_chain: Option<PendingToolChain> = None;
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    while let Some(msg_result) = receiver.next().await {
+        let msg = match msg_result {
+            Ok(m) => m,
+            Err(e) => { tracing::warn!(error = %e, "WebSocket receive error"); break; }
+        };
+        match msg {
+            WsMessage::Text(text) => {
+                handle_text_message(&text, &state, &mut sender, &mut pending_chain, &stop_flag).await;
+            }
+            WsMessage::Close(_) => { tracing::info!("WebSocket client disconnected"); break; }
+            _ => {}
+        }
+    }
+}
+
+/// Send the initial welcome message with model info.
+async fn send_welcome(
+    state: &AppState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) -> Result<(), ()> {
     let welcome = serde_json::json!({
         "type": "connected",
         "model": state.model_spec.name,
         "version": env!("CARGO_PKG_VERSION"),
     });
-
-    if let Err(e) = sender.send(WsMessage::Text(welcome.to_string().into())).await {
+    sender.send(WsMessage::Text(welcome.to_string().into())).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to send welcome");
-        return;
-    }
+    })
+}
 
-    // Deliver post-recompile resume message if pending (first client consumes it)
-    {
-        let mut resume = state.resume_message.write().await;
-        if let Some(msg) = resume.take() {
-            tracing::info!(msg_len = msg.len(), "Delivering post-recompile resume to WebSocket client");
-            let resume_payload = serde_json::json!({
-                "type": "text_delta",
-                "content": format!("✅ {}", msg),
-            });
-            let _ = sender.send(WsMessage::Text(resume_payload.to_string().into())).await;
-            let done = serde_json::json!({"type": "done"});
-            let _ = sender.send(WsMessage::Text(done.to_string().into())).await;
-        }
-    }
-
-    // Delayed reinforcement state — holds the last tool chain for next-turn evaluation
-    let mut pending_chain: Option<PendingToolChain> = None;
-
-    // ReAct stop flag — user can interrupt the loop via "stop_react" message
-    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Message loop
-    while let Some(msg_result) = receiver.next().await {
-        let msg = match msg_result {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "WebSocket receive error");
-                break;
-            }
-        };
-
-        match msg {
-            WsMessage::Text(text) => {
-                handle_text_message(&text, &state, &mut sender, &mut pending_chain, &stop_flag).await;
-            }
-            WsMessage::Close(_) => {
-                tracing::info!("WebSocket client disconnected");
-                break;
-            }
-            _ => {}
-        }
+/// Deliver post-recompile resume message if one is pending.
+async fn deliver_resume_if_pending(
+    state: &AppState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+) {
+    let mut resume = state.resume_message.write().await;
+    if let Some(msg) = resume.take() {
+        tracing::info!(msg_len = msg.len(), "Delivering post-recompile resume to WebSocket client");
+        let payload = serde_json::json!({"type": "text_delta", "content": format!("✅ {}", msg)});
+        let _ = sender.send(WsMessage::Text(payload.to_string().into())).await;
+        let done = serde_json::json!({"type": "done"});
+        let _ = sender.send(WsMessage::Text(done.to_string().into())).await;
     }
 }
 
@@ -123,12 +117,18 @@ async fn handle_text_message(
             handle_edit_and_resend(&parsed, state, sender, pending_chain, &stop_flag).await;
         }
         "stop" => {
-            tracing::info!("WS: Stop requested");
+            // Cancel any running inference — the stream consumer checks this flag
+            // on every event and drops the receiver when it sees cancellation,
+            // killing the HTTP connection to the inference server.
+            state.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("WS: Stop requested — cancelling inference and ReAct loop");
             send_ws(sender, "stopped", &serde_json::json!({})).await;
         }
         "stop_react" => {
+            state.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
             stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!("WS: ReAct loop stop requested");
+            tracing::info!("WS: ReAct loop stop requested — cancelling inference");
         }
         "plan_decision" => {
             let session_id = parsed["session_id"].as_str().unwrap_or("");
@@ -231,14 +231,32 @@ async fn handle_chat_message(
         }
     };
 
-    let result = consume_silently(rx, sender).await;
+    // Reset cancel flag before starting new inference
+    state.cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    // Consume stream using the unified consumer with WebSocket sink
+    use crate::inference::stream_consumer::{self, ConsumeResult, WebSocketSink};
+    let cancel = state.cancel_flag.clone();
+    let mut sink = WebSocketSink { sender, cancel };
+    let result = stream_consumer::consume_stream(rx, &mut sink).await;
+
+    // Handle spiral: re-prompt with thinking disabled
+    let result = match result {
+        ConsumeResult::Spiral { .. } => {
+            tracing::info!("WS: re-prompting after spiral detection");
+            stream_consumer::reprompt_after_spiral(
+                provider, &mut messages, Some(&tools), &mut sink,
+            ).await
+        }
+        other => other,
+    };
 
     match result {
         ConsumeResult::Reply { text, thinking } => {
             crate::tools::introspect_tool::log_reasoning_event(
                 &state.config.general.data_dir, session_id,
                 &serde_json::json!({"type":"inference","result":"reply","text_len":text.len(),"thinking_len":thinking.as_ref().map(|t|t.len()).unwrap_or(0)}));
-            deliver_reply(state, provider, sender, &mut messages, &tools, content, session_id, &text, &thinking).await;
+            deliver_reply(state, provider, sink.sender, &mut messages, &tools, content, session_id, &text, &thinking).await;
         }
         ConsumeResult::Escalate { objective, plan, planned_turns } => {
             crate::tools::introspect_tool::log_reasoning_event(
@@ -246,13 +264,13 @@ async fn handle_chat_message(
                 &serde_json::json!({"type":"inference","result":"escalate","objective":&objective,"planned_turns":planned_turns}));
             tracing::info!(objective = %objective, planned_turns, "L1 result: Escalate → ReAct");
             stop_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-            send_ws(sender, "status", &serde_json::json!({"message": format!("ReAct loop activated ({} turns planned)", planned_turns)})).await;
-            run_react_loop(state, provider, messages, &objective, plan.as_deref(), planned_turns, content, session_id, sender, stop_flag).await;
+            send_ws(sink.sender, "status", &serde_json::json!({"message": format!("ReAct loop activated ({} turns planned)", planned_turns)})).await;
+            run_react_loop(state, provider, messages, &objective, plan.as_deref(), planned_turns, content, session_id, sink.sender, stop_flag).await;
         }
         ConsumeResult::PlanProposal { title, plan_markdown, estimated_turns } => {
             tracing::info!(title = %title, turns = estimated_turns, "L1 result: PlanProposal → awaiting user approval");
             let plan = crate::web::ws_plans::save_pending_plan(session_id, &title, &plan_markdown, estimated_turns);
-            send_ws(sender, "plan_proposal", &serde_json::json!({
+            send_ws(sink.sender, "plan_proposal", &serde_json::json!({
                 "title": plan.title,
                 "plan_markdown": plan.plan_markdown,
                 "estimated_turns": plan.estimated_turns,
@@ -265,12 +283,21 @@ async fn handle_chat_message(
                 &state.config.general.data_dir, session_id,
                 &serde_json::json!({"type":"inference","result":"tool_call","tool":&name}));
             let tc = schema::ToolCall { id, name, arguments };
-            run_l1_tool_chain(state, provider, sender, &mut messages, &tools, content, session_id, tc, pending_chain, stop_flag).await;
+            run_l1_tool_chain(state, provider, sink.sender, &mut messages, &tools, content, session_id, tc, pending_chain, stop_flag).await;
         }
         ConsumeResult::Error(e) => {
             tracing::error!(error = %e, "L1 result: Error");
-            send_ws(sender, "error", &serde_json::json!({"message": e})).await;
+            send_ws(sink.sender, "error", &serde_json::json!({"message": e})).await;
         }
+        ConsumeResult::Cancelled { text, .. } => {
+            if text.is_empty() {
+                send_ws(sink.sender, "error", &serde_json::json!({"message": "Inference cancelled by user"})).await;
+            } else {
+                // Deliver partial text — same as old consume_with_cancel behavior
+                deliver_reply(state, provider, sink.sender, &mut messages, &tools, content, session_id, &text, &None).await;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -446,7 +473,7 @@ use crate::web::ws_react::run_react_loop;
 // are in crate::web::ws_learning.
 use ws_learning::{ingest_assistant_turn, spawn_delayed_reinforcement};
 
-use crate::web::ws_stream::{ConsumeResult, consume_silently, send_ws};
+use crate::web::ws_stream::send_ws;
 
 #[cfg(test)]
 mod tests {

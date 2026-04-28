@@ -160,6 +160,33 @@ pub async fn interp_snapshots() -> impl IntoResponse {
     Json(serde_json::json!({ "count": snapshots.len(), "snapshots": snapshots }))
 }
 
+pub async fn interp_live(State(state): State<AppState>) -> impl IntoResponse {
+    let monitor = state.live_monitor.read().await;
+    let averages = monitor.averages();
+    let features = crate::interpretability::features::labeled_features();
+
+    let entries: Vec<serde_json::Value> = averages.iter().map(|(idx, avg)| {
+        let label = features.iter().find(|f| f.index == *idx)
+            .map(|f| f.label.clone())
+            .unwrap_or_else(|| format!("feature_{}", idx));
+        let category = features.iter().find(|f| f.index == *idx)
+            .map(|f| f.category.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        serde_json::json!({
+            "index": idx,
+            "label": label,
+            "category": category,
+            "average_activation": avg,
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "window_size": monitor.window_len(),
+        "feature_count": entries.len(),
+        "features": entries,
+    }))
+}
+
 pub async fn interp_sae(State(state): State<AppState>) -> impl IntoResponse {
     let sae = state.sae.read().await;
     let (input_dim, hidden_dim, model_loaded) = match sae.as_ref() {
@@ -408,4 +435,30 @@ pub async fn list_skills(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     Json(serde_json::json!({"skills": skills, "count": skills.len()}))
+}
+
+/// POST /api/stop — Cancel running inference.
+/// This endpoint works even when the WebSocket handler is blocked on inference,
+/// because it's an independent HTTP request. The WebUI frontend and Discord
+/// adapter call this instead of relying on the (blocked) WS message path.
+pub async fn stop_inference(State(state): State<AppState>) -> impl IntoResponse {
+    state.cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("HTTP: Inference cancellation requested via /api/stop");
+    Json(serde_json::json!({ "ok": true, "message": "Inference cancelled" }))
+}
+
+/// POST /api/shutdown — Graceful engine shutdown.
+/// Disconnects all platforms before halting.
+pub async fn shutdown_engine(State(state): State<AppState>) -> impl IntoResponse {
+    tracing::warn!("SHUTDOWN requested via /api/shutdown — disconnecting platforms");
+    {
+        let mut reg = state.platforms.write().await;
+        reg.disconnect_all().await;
+    }
+    tokio::spawn(async {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tracing::info!("Shutdown: exiting now");
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({ "ok": true, "message": "Engine shutting down..." }))
 }

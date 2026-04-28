@@ -54,65 +54,78 @@ async fn handle_video(socket: WebSocket, state: AppState) {
 
         match msg {
             WsMessage::Text(text) => {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                    match data["type"].as_str() {
-                        Some("video_frame") => {
-                            // Rate limit
-                            if last_process.elapsed().as_millis() < MIN_FRAME_INTERVAL_MS {
-                                continue;
-                            }
-                            last_process = Instant::now();
-
-                            let frame_b64 = data["frame"].as_str().unwrap_or("");
-                            let audio_b64 = data["audio"].as_str();
-
-                            let result = process_video_turn(
-                                &state, &mut conversation,
-                                frame_b64, audio_b64, &session_id,
-                            ).await;
-
-                            match result {
-                                Ok((response, tts_audio)) => {
-                                    let resp = serde_json::json!({
-                                        "type": "response",
-                                        "text": response,
-                                    });
-                                    let _ = sender.send(WsMessage::Text(resp.to_string().into())).await;
-
-                                    if let Some(audio) = tts_audio {
-                                        let _ = sender.send(WsMessage::Binary(audio.into())).await;
-                                    }
-                                }
-                                Err(e) => {
-                                    let err = serde_json::json!({
-                                        "type": "video_error",
-                                        "error": e.to_string(),
-                                    });
-                                    let _ = sender.send(WsMessage::Text(err.to_string().into())).await;
-                                }
-                            }
-                        }
-                        Some("video_end") => {
-                            tracing::info!(session = %session_id, "Video call ended by client");
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
+                let action = dispatch_video_message(
+                    &state, &mut sender, &mut conversation,
+                    &text, &session_id, &mut last_process,
+                ).await;
+                if action == LoopAction::Break { break; }
             }
             WsMessage::Close(_) => break,
             _ => {}
         }
     }
 
-    // Ingest into memory
+    ingest_video_session(&state, &conversation, &session_id).await;
+    tracing::info!(session = %session_id, "Video call disconnected");
+}
+
+#[derive(PartialEq)]
+enum LoopAction { Continue, Break }
+
+/// Dispatch a single text message in the video loop.
+async fn dispatch_video_message(
+    state: &AppState,
+    sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    conversation: &mut Vec<Message>,
+    text: &str,
+    session_id: &str,
+    last_process: &mut Instant,
+) -> LoopAction {
+    let data = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(d) => d,
+        Err(_) => return LoopAction::Continue,
+    };
+
+    match data["type"].as_str() {
+        Some("video_frame") => {
+            if last_process.elapsed().as_millis() < MIN_FRAME_INTERVAL_MS {
+                return LoopAction::Continue;
+            }
+            *last_process = Instant::now();
+
+            let frame_b64 = data["frame"].as_str().unwrap_or("");
+            let audio_b64 = data["audio"].as_str();
+
+            match process_video_turn(state, conversation, frame_b64, audio_b64, session_id).await {
+                Ok((response, tts_audio)) => {
+                    let resp = serde_json::json!({"type": "response", "text": response});
+                    let _ = sender.send(WsMessage::Text(resp.to_string().into())).await;
+                    if let Some(audio) = tts_audio {
+                        let _ = sender.send(WsMessage::Binary(audio.into())).await;
+                    }
+                }
+                Err(e) => {
+                    let err = serde_json::json!({"type": "video_error", "error": e.to_string()});
+                    let _ = sender.send(WsMessage::Text(err.to_string().into())).await;
+                }
+            }
+            LoopAction::Continue
+        }
+        Some("video_end") => {
+            tracing::info!(session = %session_id, "Video call ended by client");
+            LoopAction::Break
+        }
+        _ => LoopAction::Continue,
+    }
+}
+
+/// Ingest the video conversation into memory.
+async fn ingest_video_session(state: &AppState, conversation: &[Message], session_id: &str) {
     let turns = conversation.len().saturating_sub(1);
     if turns > 0 {
         let mut mem = state.memory.write().await;
-        mem.ingest_turn("system", &format!("[Video call: {} turns]", turns), &session_id);
+        mem.ingest_turn("system", &format!("[Video call: {} turns]", turns), session_id);
     }
-
-    tracing::info!(session = %session_id, "Video call disconnected");
 }
 
 /// Process a single video turn: frame + optional audio → inference → TTS.
