@@ -6,7 +6,7 @@
 //! This module provides the type definitions and is used for non-WebSocket
 //! routing (e.g., REST API, testing).
 
-use crate::inference::fast_reply::{self, FastReplyResult};
+use crate::inference::fast_reply;
 use crate::provider::{Message, Provider, StreamEvent};
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -38,17 +38,19 @@ pub async fn route(
     provider: &dyn Provider,
     messages: &[Message],
     thinking_enabled: bool,
-    ws_tx: Option<&mpsc::Sender<StreamEvent>>,
+    _ws_tx: Option<&mpsc::Sender<StreamEvent>>,
 ) -> Result<RouterResult> {
     // Layer 1: Fast Reply
     let (_initial, rx) = fast_reply::run(provider, messages, thinking_enabled).await?;
-    let result = fast_reply::consume_stream(rx, ws_tx).await?;
+    use crate::inference::stream_consumer::{self as sc, NullSink};
+    let mut sink = NullSink;
+    let result = sc::consume_stream(rx, &mut sink).await;
 
     match result {
-        FastReplyResult::Reply { text, thinking } => {
+        sc::ConsumeResult::Reply { text, thinking } => {
             Ok(RouterResult::Reply { text, thinking, layer: 1 })
         }
-        FastReplyResult::Escalate { objective, plan } => {
+        sc::ConsumeResult::Escalate { objective, plan, .. } => {
             tracing::info!(
                 objective = %objective,
                 "Layer 1 → Layer 2 escalation via start_react_system"
@@ -63,7 +65,7 @@ pub async fn route(
                 layer: 2,
             })
         }
-        FastReplyResult::ToolCall { id: _, name, arguments } => {
+        sc::ConsumeResult::ToolCall { id: _, name, arguments } => {
             tracing::info!(tool = %name, "Layer 1 tool call — executing");
 
             // Execute stateless tool
@@ -76,6 +78,41 @@ pub async fn route(
 
             Ok(RouterResult::Reply {
                 text: format!("[Tool: {}]\n{}", name, result.output),
+                thinking: None,
+                layer: 1,
+            })
+        }
+        sc::ConsumeResult::ToolCalls(calls) => {
+            tracing::info!(count = calls.len(), "Layer 1 multi-tool call — executing");
+            let mut output = String::new();
+            for (_, name, arguments) in calls {
+                let tc = crate::tools::schema::ToolCall {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: name.clone(),
+                    arguments,
+                };
+                let result = crate::tools::executor::execute(&tc).await?;
+                output.push_str(&format!("[Tool: {}]\n{}\n\n", name, result.output));
+            }
+            Ok(RouterResult::Reply {
+                text: output,
+                thinking: None,
+                layer: 1,
+            })
+        }
+        sc::ConsumeResult::Spiral { .. } => {
+            Ok(RouterResult::Reply {
+                text: "[Thinking spiral detected — retry]".to_string(),
+                thinking: None,
+                layer: 1,
+            })
+        }
+        sc::ConsumeResult::Error(e) => {
+            anyhow::bail!("Stream error: {}", e)
+        }
+        _ => {
+            Ok(RouterResult::Reply {
+                text: "Unexpected result".to_string(),
                 thinking: None,
                 layer: 1,
             })

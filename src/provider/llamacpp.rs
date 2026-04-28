@@ -37,6 +37,8 @@ impl LlamaCppProvider {
             "--jinja".to_string(), // MANDATORY for Gemma 4 tool calling
             "-c".to_string(),
             "0".to_string(), // Auto-detect context from GGUF
+            "-np".to_string(),
+            "1".to_string(), // Single slot — prevents unused slots wasting KV cache
             "-ngl".to_string(),
             self.config.n_gpu_layers.to_string(),
         ];
@@ -183,8 +185,17 @@ impl Provider for LlamaCppProvider {
                 tokio::time::sleep(delay).await;
             }
 
-            match self.client.post(&url).json(&body).send().await {
+            let post_start = std::time::Instant::now();
+            tracing::info!(attempt, url = %url, "llamacpp: sending POST to llama-server");
+            let send_result = self.client.post(&url).json(&body).send().await;
+            match send_result {
                 Ok(response) => {
+                    tracing::info!(
+                        attempt,
+                        status = %response.status(),
+                        elapsed_ms = post_start.elapsed().as_millis() as u64,
+                        "llamacpp: POST response received"
+                    );
                     if !response.status().is_success() {
                         let status = response.status();
                         let text = response.text().await.unwrap_or_default();
@@ -221,10 +232,16 @@ impl Provider for LlamaCppProvider {
                 }
             }
         }
-        Err(last_err.unwrap()).context(format!(
-            "Failed to connect to llama-server at {} after {} retries",
-            url, max_retries
-        ))
+        match last_err {
+            Some(e) => Err(e).context(format!(
+                "Failed to connect to llama-server at {} after {} retries",
+                url, max_retries
+            )),
+            None => anyhow::bail!(
+                "Failed to connect to llama-server at {} after {} retries — no error captured",
+                url, max_retries
+            ),
+        }
     }
 
     async fn chat_sync(

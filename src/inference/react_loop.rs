@@ -1,6 +1,7 @@
 // Ern-OS — Layer 2: ReAct Loop — multi-turn reasoning + tool execution
 //! Only triggered by explicit model tool call to `start_react_system`.
 //! Loops: Reason → Act → Observe → Repeat until reply_request or user stop.
+//! Includes thinking spiral detection to break infinite reasoning loops.
 
 use crate::provider::{Message, Provider, StreamEvent};
 use crate::tools::schema::{self, ToolCall, ToolResult};
@@ -114,10 +115,21 @@ impl ReactContext {
 }
 
 /// Run a single iteration of the ReAct loop.
+/// Accepts an optional cancel flag — when set, the stream is dropped mid-inference.
 pub async fn run_iteration(
     provider: &dyn Provider,
     ctx: &ReactContext,
     thinking_enabled: bool,
+) -> Result<IterationResult> {
+    run_iteration_cancellable(provider, ctx, thinking_enabled, None).await
+}
+
+/// Run a single iteration with explicit cancellation support.
+pub async fn run_iteration_cancellable(
+    provider: &dyn Provider,
+    ctx: &ReactContext,
+    thinking_enabled: bool,
+    cancel_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<IterationResult> {
     let tools = schema::layer2_tools();
 
@@ -144,9 +156,39 @@ pub async fn run_iteration(
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
     while let Some(event) = rx.recv().await {
+        // Check cancel flag after every event
+        if let Some(flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(text_len = text.len(), "ReAct iteration: CANCELLED mid-stream");
+                drop(rx);
+                if text.is_empty() {
+                    anyhow::bail!("ReAct iteration cancelled by user");
+                }
+                return Ok(IterationResult::ImplicitReply(
+                    format!("{}\n\n*(Generation stopped by user)*", text.trim()),
+                    opt_thinking(&thinking),
+                ));
+            }
+        }
+
         match event {
             StreamEvent::TextDelta(delta) => text.push_str(&delta),
-            StreamEvent::ThinkingDelta(delta) => thinking.push_str(&delta),
+            StreamEvent::ThinkingDelta(delta) => {
+                thinking.push_str(&delta);
+                if crate::provider::stream_parser::detect_thought_spiral(&thinking) {
+                    tracing::warn!(
+                        thinking_len = thinking.len(),
+                        "ReAct: thinking spiral detected — forcing implicit reply"
+                    );
+                    drop(rx);
+                    let reply_text = if text.is_empty() {
+                        "[Thinking spiral detected — breaking loop]".to_string()
+                    } else {
+                        text
+                    };
+                    return Ok(IterationResult::ImplicitReply(reply_text, Some(thinking)));
+                }
+            }
             StreamEvent::ToolCall { id, name, arguments } => {
                 tool_calls.push(ToolCall { id, name, arguments });
             }
@@ -183,7 +225,8 @@ pub async fn run_iteration(
     // Non-terminal tool calls — return for execution
     match tool_calls.len() {
         0 => Ok(IterationResult::ImplicitReply(text, opt_thinking(&thinking))),
-        1 => Ok(IterationResult::ToolCall(tool_calls.into_iter().next().unwrap())),
+        1 => Ok(IterationResult::ToolCall(tool_calls.into_iter().next()
+            .expect("guaranteed by match arm len == 1"))),
         _ => Ok(IterationResult::ToolCalls(tool_calls)),
     }
 }
@@ -245,6 +288,8 @@ mod tests {
             active_topic: String::new(),
             topic_transition: String::new(),
             topic_context: String::new(),
+            positive_flags: Vec::new(),
+            positive_deviation_note: String::new(),
         };
         ctx.add_rejection_feedback(&result);
         let last = ctx.messages.last().unwrap().text_content();
