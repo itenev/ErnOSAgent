@@ -32,6 +32,39 @@ pub struct PlatformStatus {
     pub error: Option<String>,
 }
 
+/// Platform-neutral interactive component (button) definition.
+#[derive(Debug, Clone)]
+pub struct MessageComponent {
+    pub custom_id: String,
+    pub label: String,
+    pub emoji: String,
+    pub style: ComponentStyle,
+}
+
+/// Button style for platform-neutral component definitions.
+#[derive(Debug, Clone, Copy)]
+pub enum ComponentStyle {
+    Primary,
+    Secondary,
+    Success,
+    Danger,
+}
+
+/// An interaction event from a platform (e.g., button click).
+#[derive(Debug, Clone)]
+pub struct PlatformInteraction {
+    pub platform: String,
+    pub action: String,
+    pub session_id: String,
+    pub message_index: usize,
+    pub user_id: String,
+    pub channel_id: String,
+    /// Opaque token for deferred interaction responses.
+    pub interaction_token: String,
+    /// Interaction ID for response routing.
+    pub interaction_id: String,
+}
+
 /// Unified interface for all chat platform adapters.
 ///
 /// Each platform (Discord, Telegram, etc.) implements this trait.
@@ -81,9 +114,40 @@ pub trait PlatformAdapter: Send + Sync {
         Ok(())
     }
 
-    /// Delete a thinking thread after inference completes.
-    async fn delete_thread(&self, thread_id: &str) -> Result<()> {
+    /// Archive a thinking thread after inference completes.
+    /// Archival preserves the thread for audit trail visibility.
+    async fn archive_thread(&self, thread_id: &str) -> Result<()> {
         let _ = thread_id;
+        Ok(())
+    }
+
+    /// Reply to a message with interactive button components.
+    /// Returns the sent message's ID for later reference.
+    async fn reply_with_components(
+        &self, channel_id: &str, message_id: &str, content: &str,
+        components: &[MessageComponent],
+    ) -> Result<String> {
+        let _ = components;
+        self.reply_to_message(channel_id, message_id, content).await?;
+        Ok(String::new())
+    }
+
+    /// Delete a message by ID.
+    async fn delete_message(&self, channel_id: &str, message_id: &str) -> Result<()> {
+        let _ = (channel_id, message_id);
+        Ok(())
+    }
+
+    /// Take the receiver for interaction events (button clicks).
+    fn take_interaction_receiver(&mut self) -> Option<mpsc::Receiver<PlatformInteraction>> {
+        None
+    }
+
+    /// Send an audio file as an attachment to a channel.
+    async fn send_audio_file(
+        &self, channel_id: &str, audio_bytes: Vec<u8>, filename: &str,
+    ) -> Result<()> {
+        let _ = (channel_id, audio_bytes, filename);
         Ok(())
     }
 

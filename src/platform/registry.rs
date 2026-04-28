@@ -3,7 +3,7 @@
 // License: MIT
 //! Platform registry — manages active platform connections.
 
-use crate::platform::adapter::{PlatformAdapter, PlatformStatus};
+use crate::platform::adapter::{PlatformAdapter, PlatformStatus, MessageComponent};
 
 pub struct PlatformRegistry {
     adapters: Vec<Box<dyn PlatformAdapter>>,
@@ -88,6 +88,14 @@ impl PlatformRegistry {
         &mut self.adapters
     }
 
+    /// List names of all currently connected adapters.
+    pub fn list_connected(&self) -> Vec<String> {
+        self.adapters.iter()
+            .filter(|a| a.status().connected)
+            .map(|a| a.name().to_string())
+            .collect()
+    }
+
     /// Deliver a response back to a platform's channel.
     /// Looks up the adapter by name and calls reply_to_message.
     pub async fn send_to_platform(
@@ -135,13 +143,52 @@ impl PlatformRegistry {
         Ok(())
     }
 
-    /// Delete a thinking thread.
-    pub async fn delete_thread(
+    /// Archive a thinking thread (preserves for audit trail).
+    pub async fn archive_thread(
         &self, platform: &str, thread_id: &str,
     ) -> anyhow::Result<()> {
         for adapter in &self.adapters {
             if adapter.name().eq_ignore_ascii_case(platform) {
-                return adapter.delete_thread(thread_id).await;
+                return adapter.archive_thread(thread_id).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reply with interactive button components.
+    pub async fn reply_with_components(
+        &self, platform: &str, channel_id: &str, message_id: &str,
+        content: &str, components: &[MessageComponent],
+    ) -> anyhow::Result<String> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.reply_with_components(
+                    channel_id, message_id, content, components,
+                ).await;
+            }
+        }
+        anyhow::bail!("No adapter for '{}'", platform)
+    }
+
+    /// Delete a message on a platform.
+    pub async fn delete_message(
+        &self, platform: &str, channel_id: &str, message_id: &str,
+    ) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.delete_message(channel_id, message_id).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Send an audio file attachment to a platform channel.
+    pub async fn send_audio_file(
+        &self, platform: &str, channel_id: &str, audio_bytes: Vec<u8>, filename: &str,
+    ) -> anyhow::Result<()> {
+        for adapter in &self.adapters {
+            if adapter.name().eq_ignore_ascii_case(platform) {
+                return adapter.send_audio_file(channel_id, audio_bytes, filename).await;
             }
         }
         Ok(())

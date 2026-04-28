@@ -3,8 +3,13 @@
 pub mod adapter;
 pub mod registry;
 pub mod router;
+pub mod router_stream;
+pub mod router_interactions;
 
 pub mod discord;
 pub mod discord_handler;
+pub mod discord_interaction;
+pub mod discord_commands;
+pub mod discord_cmd_handlers;
 
 pub mod telegram;

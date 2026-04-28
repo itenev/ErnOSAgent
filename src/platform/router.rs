@@ -4,9 +4,12 @@
 //! Platform router — routes incoming platform messages to the Ern-OS
 //! WebSocket chat API as a client, per governance §6.3.
 //! Reads the hub response and delivers it back to the originating platform.
+//! Posts tool execution metadata and observer audit results to thinking threads.
 
 use crate::platform::adapter::PlatformMessage;
+use crate::platform::discord_interaction;
 use crate::platform::registry::PlatformRegistry;
+use futures_util::FutureExt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -16,31 +19,80 @@ pub async fn start_platform_router(
     registry: Arc<RwLock<PlatformRegistry>>,
     hub_port: u16,
 ) {
-    // Collect all message receivers while holding the lock, then release it.
-    let mut receivers = Vec::new();
+    let mut msg_receivers = Vec::new();
+    let mut int_receivers = Vec::new();
     {
         let mut reg = registry.write().await;
         let adapters = reg.adapters_mut();
         for adapter in adapters.iter_mut() {
+            let name = adapter.name().to_string();
             if let Some(rx) = adapter.take_message_receiver() {
-                let name = adapter.name().to_string();
-                receivers.push((name, rx));
+                msg_receivers.push((name.clone(), rx));
+            }
+            if let Some(rx) = adapter.take_interaction_receiver() {
+                int_receivers.push((name, rx));
             }
         }
     }
 
-    // Spawn a routing task for each platform.
-    for (name, rx) in receivers {
+    for (name, rx) in msg_receivers {
         let reg_clone = registry.clone();
         let port = hub_port;
         tokio::spawn(async move {
-            route_platform_messages(name, rx, port, reg_clone).await;
+            let task_name = name.clone();
+            let result = std::panic::AssertUnwindSafe(
+                route_platform_messages(name, rx, port, reg_clone)
+            )
+            .catch_unwind()
+            .await;
+
+            match result {
+                Ok(()) => tracing::info!(platform = %task_name, "Platform router exited normally"),
+                Err(panic) => {
+                    let msg = panic.downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic");
+                    tracing::error!(
+                        platform = %task_name,
+                        panic = %msg,
+                        "Platform router task PANICKED — adapter channel is dead, restart required"
+                    );
+                }
+            }
+        });
+    }
+
+    for (name, rx) in int_receivers {
+        let reg_clone = registry.clone();
+        let port = hub_port;
+        tokio::spawn(async move {
+            let task_name = name.clone();
+            let result = std::panic::AssertUnwindSafe(
+                super::router_interactions::route_interactions(name, rx, port, reg_clone)
+            )
+            .catch_unwind()
+            .await;
+
+            match result {
+                Ok(()) => tracing::info!(platform = %task_name, "Interaction router exited normally"),
+                Err(panic) => {
+                    let msg = panic.downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic");
+                    tracing::error!(
+                        platform = %task_name,
+                        panic = %msg,
+                        "Interaction router task PANICKED — restart required"
+                    );
+                }
+            }
         });
     }
 }
 
 /// Route messages from a single platform adapter to the WebUI hub.
-/// Reads the response and delivers it back to the originating channel.
 async fn route_platform_messages(
     platform: String,
     mut rx: tokio::sync::mpsc::Receiver<PlatformMessage>,
@@ -62,134 +114,324 @@ async fn route_platform_messages(
         let msg_platform = msg.platform.clone();
         let msg_user = msg.user_name.clone();
 
-        // ── Start continuous typing indicator ──
-        let typing_registry = registry.clone();
-        let typing_platform = msg_platform.clone();
-        let typing_channel = channel_id.clone();
-        let typing_cancel = tokio_util::sync::CancellationToken::new();
-        let typing_token = typing_cancel.clone();
+        let typing_cancel = start_typing_loop(&registry, &msg_platform, &channel_id);
+        let thinking_thread_id = create_thinking_thread(
+            &registry, &msg_platform, &channel_id, &message_id, &msg_user,
+        ).await;
 
-        tokio::spawn(async move {
-            loop {
-                {
-                    let reg = typing_registry.read().await;
-                    let _ = reg.start_typing(&typing_platform, &typing_channel).await;
-                }
-                tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(8)) => {}
-                    _ = typing_token.cancelled() => break,
-                }
-            }
-        });
-
-        // ── Create thinking thread ──
-        let thinking_thread_id = {
-            let reg = registry.read().await;
-            let title = format!("💭 Thinking… ({})", &msg_user);
-            match reg.create_thinking_thread(&msg_platform, &channel_id, &message_id, &title).await {
-                Ok(id) => {
-                    let _ = reg.send_to_thread(&msg_platform, &id,
-                        "🧠 *Processing your message…*"
-                    ).await;
-                    Some(id)
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "Thinking thread not available");
-                    None
-                }
-            }
-        };
-
-        // ── Forward to hub ──
-        match forward_to_hub(&msg, hub_port).await {
+        match super::router_stream::forward_to_hub_streaming(&msg, hub_port, &registry, &msg_platform, &thinking_thread_id).await {
             Ok(hub_resp) => {
-                // Stop typing
                 typing_cancel.cancel();
-
-                // ── Post thinking to thread ──
-                if let (Some(ref tid), Some(ref thinking)) = (&thinking_thread_id, &hub_resp.thinking) {
-                    if !thinking.is_empty() {
-                        let reg = registry.read().await;
-                        let _ = reg.send_to_thread(&msg_platform, tid, thinking).await;
-                    }
-                }
-
-                if hub_resp.response.is_empty() {
-                    tracing::warn!(platform = %msg_platform, "Hub returned empty response");
-                } else {
-                    // Deliver response as reply to original message
-                    let reg = registry.read().await;
-                    if let Err(e) = reg.send_to_platform(
-                        &msg_platform, &channel_id, &message_id, &hub_resp.response,
-                    ).await {
-                        tracing::error!(
-                            platform = %msg_platform,
-                            channel = %channel_id,
-                            error = %e,
-                            "Failed to deliver response to platform"
-                        );
-                    }
-                }
+                deliver_response(
+                    &registry, &msg_platform, &channel_id, &message_id,
+                    &thinking_thread_id, hub_resp,
+                ).await;
             }
             Err(e) => {
                 typing_cancel.cancel();
                 tracing::warn!(
                     platform = %msg_platform,
                     error = %e,
-                    "Failed to forward platform message to hub"
+                    error_debug = ?e,
+                    hub_port = hub_port,
+                    "Failed to forward platform message to hub — check if server is running"
                 );
+                finalize_thread_on_error(&registry, &msg_platform, &thinking_thread_id, &e).await;
             }
-        }
-
-        // ── Clean up thinking thread ──
-        if let Some(tid) = thinking_thread_id {
-            let reg = registry.read().await;
-            let _ = reg.send_to_thread(&msg_platform, &tid,
-                "✅ *Done — response delivered.*"
-            ).await;
-            // Delete after a short delay so the user can glance at it
-            let cleanup_registry = registry.clone();
-            let cleanup_platform = msg_platform.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-                let reg = cleanup_registry.read().await;
-                let _ = reg.delete_thread(&cleanup_platform, &tid).await;
-            });
         }
     }
 
     tracing::info!(platform = %platform, "Platform router stopped");
 }
 
-/// Hub response containing the reply and optional thinking content.
-struct HubResponse {
-    response: String,
-    thinking: Option<String>,
-}
+/// Spawn a continuous typing indicator loop. Returns a cancel token.
+fn start_typing_loop(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    channel_id: &str,
+) -> tokio_util::sync::CancellationToken {
+    let typing_registry = registry.clone();
+    let typing_platform = platform.to_string();
+    let typing_channel = channel_id.to_string();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let token = cancel.clone();
 
-/// Forward a platform message to the Ern-OS hub via HTTP API.
-/// Returns the response text and thinking content on success.
-async fn forward_to_hub(msg: &PlatformMessage, port: u16) -> anyhow::Result<HubResponse> {
-    let url = format!("http://127.0.0.1:{}/api/chat/platform", port);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300)) // 5 min for local inference
-        .build()?;
-
-    let payload = serde_json::json!({
-        "platform": msg.platform,
-        "channel_id": msg.channel_id,
-        "user_id": msg.user_id,
-        "user_name": msg.user_name,
-        "content": msg.content,
-        "attachments": msg.attachments,
-        "message_id": msg.message_id,
-        "is_admin": msg.is_admin,
+    tokio::spawn(async move {
+        loop {
+            {
+                let reg = typing_registry.read().await;
+                let _ = reg.start_typing(&typing_platform, &typing_channel).await;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(8)) => {}
+                _ = token.cancelled() => break,
+            }
+        }
     });
 
-    let resp = client.post(&url)
-        .json(&payload)
-        .send()
-        .await?;
+    cancel
+}
+
+/// Create a thinking thread on the platform. Returns the thread ID.
+pub(crate) async fn create_thinking_thread(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    channel_id: &str,
+    message_id: &str,
+    user_name: &str,
+) -> Option<String> {
+    let reg = registry.read().await;
+    let title = format!("💭 Thinking… ({})", user_name);
+    match reg.create_thinking_thread(platform, channel_id, message_id, &title).await {
+        Ok(id) => {
+            let _ = reg.send_to_thread(platform, &id,
+                "🧠 *Processing your message…*"
+            ).await;
+            Some(id)
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "Thinking thread not available");
+            None
+        }
+    }
+}
+
+/// Deliver the hub response: post tool events + audit to thinking thread, then reply with buttons.
+pub(crate) async fn deliver_response(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    channel_id: &str,
+    message_id: &str,
+    thinking_thread_id: &Option<String>,
+    hub_resp: HubResponse,
+) {
+    // Post thinking tokens to thread
+    if let (Some(tid), Some(ref thinking)) = (thinking_thread_id, &hub_resp.thinking) {
+        if !thinking.is_empty() {
+            let reg = registry.read().await;
+            let _ = reg.send_to_thread(platform, tid, thinking).await;
+        }
+    }
+
+    // Post tool events to thread
+    if let Some(tid) = thinking_thread_id {
+        post_tool_events(registry, platform, tid, &hub_resp.tool_events).await;
+        post_audit_summary(registry, platform, tid, &hub_resp.audit).await;
+    }
+
+    // Post plan content to thinking thread for review
+    if let Some(tid) = thinking_thread_id {
+        if let Some(ref plan_md) = hub_resp.plan_markdown {
+            post_plan_to_thread(registry, platform, tid, plan_md).await;
+        }
+    }
+
+    // Deliver response with interactive buttons (after sanitization)
+    if hub_resp.response.is_empty() {
+        tracing::warn!(platform = %platform, "Hub returned empty response");
+    } else {
+        let scrub = crate::web::output_sanitizer::scrub_tool_leaks(&hub_resp.response);
+        let final_text = if scrub.text.is_empty() && scrub.had_leak {
+            // Sanitizer stripped everything — deliver original output, log for DPO
+            tracing::warn!(platform = %platform, leak = ?scrub.leak_description, "Sanitizer stripped entire response — delivering original");
+            hub_resp.response.clone()
+        } else {
+            scrub.text
+        };
+
+        let buttons = build_buttons_for_response(&hub_resp);
+        let reg = registry.read().await;
+        let result = reg.reply_with_components(
+            platform, channel_id, message_id, &final_text, &buttons,
+        ).await;
+        if let Err(e) = result {
+            tracing::error!(platform = %platform, error = %e, "Failed to deliver response");
+        }
+    }
+
+    // Finalize and archive thread (preserve for audit trail)
+    if let Some(tid) = thinking_thread_id {
+        let reg = registry.read().await;
+        let _ = reg.send_to_thread(platform, tid, "✅ *Done — response delivered.*").await;
+        let _ = reg.archive_thread(platform, tid).await;
+    }
+}
+
+/// Build the appropriate button set for a hub response.
+fn build_buttons_for_response(
+    hub_resp: &HubResponse,
+) -> Vec<crate::platform::adapter::MessageComponent> {
+    let session_id = hub_resp.session_id.as_deref().unwrap_or("unknown");
+    if hub_resp.has_plan {
+        discord_interaction::build_plan_buttons(session_id)
+    } else {
+        // Message index 0 = latest response (router doesn't track index).
+        // The hub session_id is what matters for the API call.
+        discord_interaction::build_response_buttons(session_id, 0)
+    }
+}
+
+/// Format and post tool execution events to the thinking thread.
+pub(crate) async fn post_tool_events(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    thread_id: &str,
+    tool_events: &[serde_json::Value],
+) {
+    if tool_events.is_empty() {
+        return;
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for event in tool_events {
+        let name = event["name"].as_str().unwrap_or("unknown");
+        let success = event["success"].as_bool().unwrap_or(false);
+        let elapsed = event["elapsed_ms"].as_u64().unwrap_or(0);
+        let preview = event["output_preview"].as_str().unwrap_or("");
+
+        let icon = if success { "✅" } else { "❌" };
+        let elapsed_fmt = format_elapsed(elapsed);
+
+        // Truncate preview for Discord readability
+        let short_preview = if preview.len() > 120 {
+            let b = preview.char_indices().take_while(|(i,_)| *i <= 120).last().map(|(i,_)| i).unwrap_or(0);
+            format!("{}…", &preview[..b])
+        } else {
+            preview.to_string()
+        };
+
+        lines.push(format!("🔧 **{}** — {} {} ({})", name, icon, if success { "success" } else { "failed" }, elapsed_fmt));
+        if !short_preview.is_empty() {
+            lines.push(format!("└ {}", short_preview));
+        }
+    }
+
+    let message = lines.join("\n");
+    let reg = registry.read().await;
+    let _ = reg.send_to_thread(platform, thread_id, &message).await;
+}
+
+/// Format and post audit summary to the thinking thread.
+pub(crate) async fn post_audit_summary(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    thread_id: &str,
+    audit: &Option<serde_json::Value>,
+) {
+    let Some(audit) = audit else { return };
+
+    let verdict = audit["verdict"].as_str().unwrap_or("Unknown");
+    let confidence = audit["confidence"].as_f64().unwrap_or(0.0);
+    let retries = audit["retries"].as_u64().unwrap_or(0);
+    let topic = audit["active_topic"].as_str().unwrap_or("");
+
+    let icon = if verdict == "Allowed" { "✅" } else { "⚠️" };
+    let mut message = format!("📋 **Observer Audit** — {} {} ({:.1} confidence)", icon, verdict, confidence);
+    if retries > 0 {
+        message.push_str(&format!(" [{} retries]", retries));
+    }
+    if !topic.is_empty() {
+        message.push_str(&format!("\n📍 Topic: {}", topic));
+    }
+
+    let reg = registry.read().await;
+    let _ = reg.send_to_thread(platform, thread_id, &message).await;
+}
+
+/// Post plan markdown content to the thinking thread for user review.
+/// Splits into 1900-char chunks to respect Discord's 2000-char message limit.
+async fn post_plan_to_thread(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    thread_id: &str,
+    plan_markdown: &str,
+) {
+    let reg = registry.read().await;
+    let _ = reg.send_to_thread(platform, thread_id, "📋 **Implementation Plan:**").await;
+
+    // Split plan into Discord-safe chunks (1900 chars to leave room for formatting)
+    for chunk in split_at_boundary(plan_markdown, 1900) {
+        let _ = reg.send_to_thread(platform, thread_id, &chunk).await;
+    }
+}
+
+/// Split a string at char boundaries near `max_len`, preferring newline splits.
+fn split_at_boundary(text: &str, max_len: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if remaining.len() <= max_len {
+            chunks.push(remaining.to_string());
+            break;
+        }
+        // Find the last newline before max_len
+        let boundary = remaining[..max_len].rfind('\n').unwrap_or(max_len);
+        let boundary = if boundary == 0 { max_len } else { boundary };
+        chunks.push(remaining[..boundary].to_string());
+        remaining = &remaining[boundary..].trim_start_matches('\n');
+    }
+    chunks
+}
+
+/// Post an error message to the thinking thread on hub failure.
+async fn finalize_thread_on_error(
+    registry: &Arc<RwLock<PlatformRegistry>>,
+    platform: &str,
+    thinking_thread_id: &Option<String>,
+    error: &anyhow::Error,
+) {
+    if let Some(tid) = thinking_thread_id {
+        let reg = registry.read().await;
+        let _ = reg.send_to_thread(platform, tid,
+            &format!("❌ *Error: {}*", error),
+        ).await;
+    }
+}
+
+/// Format milliseconds into a human-readable duration.
+fn format_elapsed(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
+}
+
+/// Hub response containing the reply, thinking, tool events, audit, and plan flag.
+pub(crate) struct HubResponse {
+    pub(crate) response: String,
+    pub(crate) thinking: Option<String>,
+    pub(crate) tool_events: Vec<serde_json::Value>,
+    pub(crate) audit: Option<serde_json::Value>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) has_plan: bool,
+    pub(crate) plan_markdown: Option<String>,
+}
+
+/// Parse a hub JSON response body into a HubResponse.
+pub(crate) fn parse_hub_response(body: serde_json::Value) -> HubResponse {
+    HubResponse {
+        response: body["response"].as_str().unwrap_or("").to_string(),
+        thinking: body["thinking"].as_str().map(|s| s.to_string()),
+        tool_events: body["tool_events"].as_array().cloned().unwrap_or_default(),
+        audit: body.get("audit").cloned(),
+        session_id: body["session_id"].as_str().map(|s| s.to_string()),
+        has_plan: body["has_plan"].as_bool().unwrap_or(false),
+        plan_markdown: body["plan_markdown"].as_str().map(|s| s.to_string()),
+    }
+}
+
+
+/// Forward a platform message to the Ern-OS hub via HTTP API (blocking fallback).
+pub(crate) async fn forward_to_hub(msg: &PlatformMessage, port: u16) -> anyhow::Result<HubResponse> {
+    let url = format!("http://127.0.0.1:{}/api/chat/platform", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+
+    let payload = super::router_stream::build_platform_payload(msg);
+
+    let resp = client.post(&url).json(&payload).send().await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -199,16 +441,7 @@ async fn forward_to_hub(msg: &PlatformMessage, port: u16) -> anyhow::Result<HubR
 
     let body: serde_json::Value = resp.json().await?;
 
-    let response = body["response"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    let thinking = body["thinking"]
-        .as_str()
-        .map(|s| s.to_string());
-
-    Ok(HubResponse { response, thinking })
+    Ok(parse_hub_response(body))
 }
 
 #[cfg(test)]
@@ -234,5 +467,72 @@ mod tests {
         });
         assert_eq!(payload["platform"], "discord");
         assert_eq!(payload["is_admin"], true);
+    }
+
+    #[test]
+    fn test_format_elapsed_ms() {
+        assert_eq!(format_elapsed(45), "45ms");
+        assert_eq!(format_elapsed(999), "999ms");
+    }
+
+    #[test]
+    fn test_format_elapsed_seconds() {
+        assert_eq!(format_elapsed(1000), "1.0s");
+        assert_eq!(format_elapsed(2500), "2.5s");
+    }
+
+    #[test]
+    fn test_hub_response_parse() {
+        let body = serde_json::json!({
+            "response": "Hello",
+            "thinking": "Let me think",
+            "tool_events": [
+                {"name": "web_search", "success": true, "elapsed_ms": 1234, "output_preview": "Found results"}
+            ],
+            "audit": {
+                "verdict": "Allowed",
+                "confidence": 8.5,
+                "retries": 0,
+                "active_topic": "Testing"
+            }
+        });
+
+        let response = body["response"].as_str().unwrap_or("").to_string();
+        let thinking = body["thinking"].as_str().map(|s| s.to_string());
+        let tool_events = body["tool_events"].as_array().cloned().unwrap_or_default();
+        let audit = body.get("audit").cloned();
+
+        assert_eq!(response, "Hello");
+        assert_eq!(thinking.unwrap(), "Let me think");
+        assert_eq!(tool_events.len(), 1);
+        assert_eq!(tool_events[0]["name"], "web_search");
+        assert!(audit.is_some());
+        assert_eq!(audit.unwrap()["verdict"], "Allowed");
+    }
+
+    #[test]
+    fn test_split_at_boundary_short() {
+        let chunks = split_at_boundary("short text", 100);
+        assert_eq!(chunks, vec!["short text"]);
+    }
+
+    #[test]
+    fn test_split_at_boundary_long() {
+        let text = "line1\nline2\nline3\nline4\nline5";
+        let chunks = split_at_boundary(text, 12);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[0].len() <= 12);
+    }
+
+    #[test]
+    fn test_hub_response_plan_markdown() {
+        let body = serde_json::json!({
+            "response": "Plan ready",
+            "has_plan": true,
+            "plan_markdown": "## Steps\n- Do thing 1\n- Do thing 2",
+        });
+        let resp = parse_hub_response(body);
+        assert!(resp.has_plan);
+        assert_eq!(resp.plan_markdown.unwrap(), "## Steps\n- Do thing 1\n- Do thing 2");
     }
 }
