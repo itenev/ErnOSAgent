@@ -224,6 +224,15 @@ mod state_tests {
             mutable_config: Arc::new(RwLock::new(AppConfig::default())),
             resume_message: Arc::new(RwLock::new(None)),
             sae: Arc::new(RwLock::new(None)),
+            live_monitor: Arc::new(RwLock::new(
+                ern_os::interpretability::live::LiveMonitor::new(50),
+            )),
+            snapshot_store: Arc::new(RwLock::new(
+                ern_os::interpretability::snapshot::SnapshotStore::new(
+                    &p.join("snapshots"),
+                ).unwrap(),
+            )),
+            cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -441,6 +450,8 @@ mod react_e2e {
             active_topic: String::new(),
             topic_transition: String::new(),
             topic_context: String::new(),
+            positive_flags: Vec::new(),
+            positive_deviation_note: String::new(),
         };
         ctx.add_rejection_feedback(&result);
         let last = ctx.messages.last().unwrap();
