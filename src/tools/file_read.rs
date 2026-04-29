@@ -5,10 +5,12 @@
 use anyhow::{Context, Result};
 use tracing;
 
-/// Derive page size from the model's context_length.
-/// Allocates 25% of context window for file content (~4 chars per token).
+/// Derive page size (in characters) from the model's context_length (in tokens).
+/// At ~4 chars per token, `context_length` chars ≈ `context_length / 4` tokens ≈ 25%
+/// of the model's token budget. This ensures a single file_read never consumes
+/// more than ~25% of available context.
 fn page_size_chars(context_length: usize) -> usize {
-    (context_length / 4) * 4
+    context_length
 }
 
 pub async fn execute(args: &serde_json::Value, context_length: usize) -> Result<String> {
@@ -113,6 +115,110 @@ fn format_page(start: usize, end: usize, total: usize, content: &str) -> String 
     }
 }
 
+// ── Auto-stitch: transparent multi-page file reading ─────────────────
+
+/// Parse a `[BOOKMARK: line N — use file_read with start_line=N to continue]`
+/// marker from a tool result. Returns the continuation start_line if found.
+pub fn parse_bookmark(output: &str) -> Option<usize> {
+    // Look for the exact bookmark pattern at the end of the output
+    let marker = "[BOOKMARK: line ";
+    let pos = output.rfind(marker)?;
+    let after_marker = &output[pos + marker.len()..];
+    // Extract the number before the " — " separator
+    let end = after_marker.find(' ')?;
+    after_marker[..end].parse::<usize>().ok()
+}
+
+/// Strip the bookmark line from a paginated result, returning just the content.
+fn strip_bookmark(output: &str) -> &str {
+    match output.rfind("\n\n[BOOKMARK:") {
+        Some(pos) => &output[..pos],
+        None => output,
+    }
+}
+
+/// Strip the page header (e.g., `[Lines 101-200 of 500]`) from content.
+fn strip_page_header(output: &str) -> &str {
+    // Header is always the first line: [Lines X-Y of Z]
+    match output.find("]\n") {
+        Some(pos) if output.starts_with("[Lines ") => &output[pos + 2..],
+        _ => output,
+    }
+}
+
+/// Auto-stitch a file_read result by detecting [BOOKMARK] markers and
+/// transparently fetching subsequent pages. Returns the stitched content.
+///
+/// This eliminates the need for inference rounds just to continue reading.
+/// Max 10 continuations to prevent runaway on very large files.
+/// Total stitched content is capped at `page_size_chars(context_length)`.
+pub async fn auto_stitch(
+    initial_result: &str,
+    original_args: &serde_json::Value,
+    context_length: usize,
+) -> String {
+    let total_budget = page_size_chars(context_length);
+    let max_continuations = 10;
+    let mut stitched = initial_result.to_string();
+
+    for continuation in 0..max_continuations {
+        let next_line = match parse_bookmark(&stitched) {
+            Some(line) => line,
+            None => break, // No bookmark = we have all the content
+        };
+
+        // Budget check: stop if we've accumulated enough content
+        if stitched.len() >= total_budget {
+            tracing::info!(
+                len = stitched.len(), budget = total_budget,
+                "Auto-stitch: budget reached, stopping"
+            );
+            break;
+        }
+
+        // Build continuation args: same path, new start_line
+        let path = match original_args["path"].as_str() {
+            Some(p) => p,
+            None => break,
+        };
+        let cont_args = serde_json::json!({
+            "path": path,
+            "start_line": next_line,
+        });
+
+        tracing::debug!(
+            path = %path, start_line = next_line, continuation,
+            "Auto-stitch: fetching next page"
+        );
+
+        match execute(&cont_args, context_length).await {
+            Ok(next_page) => {
+                // Strip the bookmark from current content, strip header from next page
+                let current_content = strip_bookmark(&stitched);
+                let next_content = strip_page_header(&next_page);
+                stitched = format!("{}\n{}", current_content, next_content);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, continuation,
+                    "Auto-stitch: continuation failed, returning partial content"
+                );
+                break;
+            }
+        }
+    }
+
+    if stitched.len() > initial_result.len() {
+        tracing::info!(
+            initial_len = initial_result.len(),
+            stitched_len = stitched.len(),
+            "Auto-stitch: expanded file_read result"
+        );
+    }
+
+    stitched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,4 +290,52 @@ mod tests {
         assert!(large > small);
         assert!(small > 0);
     }
+
+    #[test]
+    fn test_page_size_is_context_length() {
+        assert_eq!(page_size_chars(262144), 262144);
+        assert_eq!(page_size_chars(32768), 32768);
+    }
+
+    #[test]
+    fn test_parse_bookmark_found() {
+        let output = "[Lines 1-100 of 500]\ncontent here\n\n\
+                      [BOOKMARK: line 101 — use file_read with start_line=101 to continue]";
+        assert_eq!(parse_bookmark(output), Some(101));
+    }
+
+    #[test]
+    fn test_parse_bookmark_not_found() {
+        let output = "[Lines 1-10 of 10 (END OF FILE)]\ncontent here";
+        assert_eq!(parse_bookmark(output), None);
+    }
+
+    #[test]
+    fn test_strip_bookmark() {
+        let output = "[Lines 1-100 of 500]\ncontent\n\n\
+                      [BOOKMARK: line 101 — use file_read with start_line=101 to continue]";
+        assert_eq!(strip_bookmark(output), "[Lines 1-100 of 500]\ncontent");
+    }
+
+    #[test]
+    fn test_strip_page_header() {
+        let output = "[Lines 101-200 of 500]\nactual content\nmore content";
+        assert_eq!(strip_page_header(output), "actual content\nmore content");
+    }
+
+    #[test]
+    fn test_strip_page_header_no_header() {
+        let output = "just plain content";
+        assert_eq!(strip_page_header(output), "just plain content");
+    }
+
+    #[tokio::test]
+    async fn test_auto_stitch_no_bookmark() {
+        // Small file — no bookmark, auto_stitch should return unchanged
+        let args = serde_json::json!({"path": "Cargo.toml"});
+        let result = execute(&args, 262144).await.unwrap();
+        let stitched = auto_stitch(&result, &args, 262144).await;
+        assert_eq!(stitched, result);
+    }
 }
+

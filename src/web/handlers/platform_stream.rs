@@ -89,6 +89,26 @@ async fn run_streaming_pipeline(
     };
 
 
+    // Keepalive emitter — sends a heartbeat every 30 seconds to prevent
+    // client-side timeouts during long inference prefill phases.
+    let keepalive_tx = tx.clone();
+    let keepalive_cancel = tokio_util::sync::CancellationToken::new();
+    let keepalive_token = keepalive_cancel.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                    if keepalive_tx.send(Ok(
+                        Event::default().event("keepalive").data("{}")
+                    )).await.is_err() {
+                        break; // receiver dropped
+                    }
+                }
+                _ = keepalive_token.cancelled() => break,
+            }
+        }
+    });
+
     // Consume stream using the unified consumer with SSE sink
     use crate::inference::stream_consumer::{self, ConsumeResult, SseSink};
     let mut sink = SseSink { tx: &tx };
@@ -105,6 +125,9 @@ async fn run_streaming_pipeline(
         }
         other => other,
     };
+
+    // Stop keepalive — inference is complete
+    keepalive_cancel.cancel();
 
     // Dispatch result
     match result {

@@ -2,21 +2,46 @@
 //!
 //! These run the full tool execution pipeline for platform-ingested messages,
 //! collecting ToolEvent metadata for thinking thread observability.
+//!
+//! Split into three modules per governance §1.1:
+//! - `platform_exec` (this file): orchestrators
+//! - `platform_context`: context budget management
+//! - `platform_reinfer`: re-inference dispatch
 
 use crate::web::state::AppState;
 use super::platform_ingest::{ToolEvent, AuditSummary, audit_and_capture};
+use super::platform_reinfer::{LoopAction, reinfer_and_dispatch, inject_react_instruction};
+
+// Re-export public items so existing callers don't need to change import paths.
+pub use super::platform_context::{
+    append_tool_messages, enforce_context_budget, build_tool_context,
+};
 
 /// Execute a tool and capture a ToolEvent with timing.
+/// For `file_read` calls, auto-stitches paginated results transparently.
 pub async fn execute_and_capture(
     state: &AppState,
     tc: &crate::tools::schema::ToolCall,
 ) -> (crate::tools::schema::ToolResult, ToolEvent) {
     let start = std::time::Instant::now();
-    let result = crate::web::tool_dispatch::execute_tool_with_state(state, tc).await;
+    let mut result = crate::web::tool_dispatch::execute_tool_with_state(state, tc).await;
+
+    // Auto-stitch: if this is a file_read with a [BOOKMARK], transparently
+    // fetch remaining pages without burning an inference round.
+    if tc.name == "file_read" && result.success {
+        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+            if crate::tools::file_read::parse_bookmark(&result.output).is_some() {
+                let stitched = crate::tools::file_read::auto_stitch(
+                    &result.output, &args, state.model_spec.context_length,
+                ).await;
+                result.output = stitched;
+            }
+        }
+    }
+
     let elapsed = start.elapsed().as_millis() as u64;
 
     let preview = if result.output.len() > 300 {
-        // Find the char boundary at or before byte 300 to avoid slicing mid-character
         let boundary = result.output.char_indices()
             .take_while(|(i, _)| *i <= 300)
             .last()
@@ -101,9 +126,7 @@ pub async fn run_platform_tool_chain(
         );
         enforce_context_budget(messages, state.model_spec.context_length);
 
-        // Pre-infer budget check: if context is still dangerously close to the limit
-        // after trimming, fail fast with a useful message instead of sending a
-        // doomed inference request that will process for a very long time.
+        // Pre-infer budget check
         let post_trim_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
         let post_trim_tokens = post_trim_chars / 4 + 2000;
         let budget_ratio = post_trim_tokens as f64 / state.model_spec.context_length as f64;
@@ -112,14 +135,16 @@ pub async fn run_platform_tool_chain(
                 post_trim_tokens,
                 context_length = state.model_spec.context_length,
                 budget_ratio = format!("{:.1}%", budget_ratio * 100.0),
-                "Context at {:.0}% of window after trimming — stopping tool chain to avoid excessive inference time",
+                "Context at {:.0}% of window after trimming — stopping tool chain",
                 budget_ratio * 100.0,
             );
             let reply = format!(
-                "I've read through the file but the accumulated context is at {:.0}% of the model's window. \
-                 To continue reading, please ask me to read the next section in a new message — \
-                 I'll use the bookmarks to pick up where I left off.",
+                "Context is at {:.0}% capacity ({} tokens used of {} available) after {} tool calls. \
+                 Please continue in a new message — bookmarks are preserved for continuation.",
                 budget_ratio * 100.0,
+                post_trim_tokens,
+                state.model_spec.context_length,
+                tool_events.len(),
             );
             return (reply, tool_events, None);
         }
@@ -128,7 +153,6 @@ pub async fn run_platform_tool_chain(
             LoopAction::Reply(text, audit) => return (text, tool_events, Some(audit)),
             LoopAction::NextTool(tc) => current_tc = tc,
             LoopAction::MultiTool(tcs) => {
-                // Execute all but the last tool inline, then set current_tc to the last
                 let mut remaining = tcs;
                 let last_tc = remaining.pop();
                 for tc in remaining {
@@ -169,8 +193,6 @@ pub async fn run_platform_tool_chain(
 }
 
 /// Run L2 ReAct loop. Returns (reply, tool_events, audit_summary).
-/// If `sse_tx` is provided, tool events are emitted live to the SSE stream
-/// so platform clients (Discord thinking thread) can see progress.
 pub async fn run_platform_react(
     state: &AppState,
     provider: &dyn crate::provider::Provider,
@@ -289,413 +311,4 @@ async fn handle_react_tool(
     append_tool_messages(messages, tc, &result);
     enforce_context_budget(messages, state.model_spec.context_length);
     None
-}
-
-/// Result of re-inference after tool execution.
-enum LoopAction {
-    Reply(String, AuditSummary),
-    NextTool(crate::tools::schema::ToolCall),
-    MultiTool(Vec<crate::tools::schema::ToolCall>),
-    Escalate(String, Vec<ToolEvent>, Option<AuditSummary>),
-    Error(String),
-}
-
-/// Re-infer after tool execution and classify the result.
-async fn reinfer_and_dispatch(
-    state: &AppState,
-    provider: &dyn crate::provider::Provider,
-    messages: &mut Vec<crate::provider::Message>,
-    tools: &serde_json::Value,
-    user_query: &str,
-    session_id: &str,
-) -> LoopAction {
-    let rx = match provider.chat(messages, Some(tools), true).await {
-        Ok(rx) => rx,
-        Err(e) => {
-            tracing::error!(error = %e, "Platform L1 re-inference failed");
-            return LoopAction::Error(format!("Tool execution error: {}", e));
-        }
-    };
-
-    use crate::inference::stream_consumer::{self, ConsumeResult, NullSink};
-    let mut sink = NullSink;
-    let result = stream_consumer::consume_stream(rx, &mut sink).await;
-    match result {
-        ConsumeResult::Spiral { .. } => {
-            let recovered = stream_consumer::reprompt_after_spiral(
-                provider, messages, Some(tools), &mut sink,
-            ).await;
-            match recovered {
-                ConsumeResult::Reply { text, .. } => {
-                    let (audited, audit) = audit_and_capture(
-                        state, provider, messages, tools, user_query, &text, session_id,
-                    ).await;
-                    LoopAction::Reply(audited, audit)
-                }
-                ConsumeResult::ToolCall { id, name, arguments } => {
-                    LoopAction::NextTool(crate::tools::schema::ToolCall { id, name, arguments })
-                }
-                ConsumeResult::Error(e) => LoopAction::Error(format!("Spiral recovery: {}", e)),
-                _ => LoopAction::Error("Spiral recovery: unexpected result".to_string()),
-            }
-        }
-        ConsumeResult::Reply { text, .. } if text.trim().is_empty() => {
-            // The model returned finish_reason=stop with ZERO tokens generated.
-            // This is NOT a model decision — it's context overflow. The prompt
-            // filled the entire context window, leaving no room for decode.
-            // Trim the heaviest tool results and retry once.
-            let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-            tracing::error!(
-                total_chars,
-                msg_count = messages.len(),
-                estimated_tokens = total_chars / 4 + 2000,
-                context_length = state.model_spec.context_length,
-                "Model returned empty response — context overflow detected, trimming and retrying"
-            );
-            enforce_context_budget(messages, state.model_spec.context_length / 2);
-
-            // Retry once with trimmed context
-            let retry_rx = match provider.chat(messages, Some(tools), false).await {
-                Ok(rx) => rx,
-                Err(e) => return LoopAction::Error(format!("Retry after empty response failed: {}", e)),
-            };
-            let mut retry_sink = NullSink;
-            match stream_consumer::consume_stream(retry_rx, &mut retry_sink).await {
-                ConsumeResult::Reply { text, .. } if !text.trim().is_empty() => {
-                    let (audited, audit) = audit_and_capture(
-                        state, provider, messages, tools, user_query, &text, session_id,
-                    ).await;
-                    LoopAction::Reply(audited, audit)
-                }
-                ConsumeResult::ToolCall { id, name, arguments } => {
-                    LoopAction::NextTool(crate::tools::schema::ToolCall { id, name, arguments })
-                }
-                _ => {
-                    // Retry also empty — return a diagnostic message instead of silence
-                    let reply = "The tool results were too large for the context window. \
-                                 Please ask me to continue in a new message — I'll use \
-                                 the tool results I've already collected.".to_string();
-                    LoopAction::Error(reply)
-                }
-            }
-        }
-        ConsumeResult::Reply { text, .. } => {
-            let (audited, audit) = audit_and_capture(
-                state, provider, messages, tools, user_query, &text, session_id,
-            ).await;
-            LoopAction::Reply(audited, audit)
-        }
-        ConsumeResult::ToolCall { id, name, arguments } => {
-            LoopAction::NextTool(crate::tools::schema::ToolCall { id, name, arguments })
-        }
-        ConsumeResult::ToolCalls(calls) => {
-            let tcs: Vec<crate::tools::schema::ToolCall> = calls.into_iter()
-                .map(|(id, name, arguments)| crate::tools::schema::ToolCall { id, name, arguments })
-                .collect();
-            LoopAction::MultiTool(tcs)
-        }
-        ConsumeResult::Escalate { objective, plan, .. } => {
-            let (reply, events, audit) = run_platform_react(
-                state, provider, messages.clone(), &objective, plan.as_deref(),
-                user_query, session_id, None,
-            ).await;
-            LoopAction::Escalate(reply, events, audit)
-        }
-        ConsumeResult::Error(e) => {
-            tracing::error!(error = %e, "Platform L1 stream error");
-            LoopAction::Error(format!("Error: {}", e))
-        }
-        _ => LoopAction::Error("Unexpected stream result".to_string()),
-    }
-}
-
-/// Append tool call and result messages to the conversation.
-pub(crate) fn append_tool_messages(
-    messages: &mut Vec<crate::provider::Message>,
-    tc: &crate::tools::schema::ToolCall,
-    result: &crate::tools::schema::ToolResult,
-) {
-    messages.push(crate::provider::Message::assistant_tool_call(
-        &tc.id, &tc.name, &tc.arguments,
-    ));
-    messages.push(crate::provider::Message::tool_result(&tc.id, &result.output));
-}
-
-/// Ensure total context fits within the model's context window.
-/// Trims tool result messages oldest-first until the total fits.
-/// Old tool results are dead weight — the model already processed them.
-pub(crate) fn enforce_context_budget(
-    messages: &mut Vec<crate::provider::Message>,
-    context_length: usize,
-) {
-    // Estimate total tokens: ~4 chars per token, plus overhead for tool schemas (~2000 tokens)
-    let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-    let estimated_tokens = total_chars / 4 + 2000;
-
-    if estimated_tokens <= context_length {
-        return;
-    }
-
-    tracing::warn!(
-        estimated_tokens,
-        context_length,
-        overshoot = estimated_tokens - context_length,
-        "Context budget exceeded — trimming tool results"
-    );
-
-    // Collect indices of tool messages, oldest first
-    let tool_indices: Vec<usize> = messages.iter().enumerate()
-        .filter(|(_, m)| m.role == "tool")
-        .map(|(i, _)| i)
-        .collect();
-
-    // Trim from oldest to newest, keeping the most recent tool result as large as possible
-    let mut trimmed_total = 0usize;
-    for &idx in &tool_indices {
-        let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-        let estimated = total_chars / 4 + 2000;
-        if estimated <= context_length {
-            break;
-        }
-
-        let content = messages[idx].text_content();
-        let content_len = content.len();
-
-        // For older tool results (not the last one), compress to preserve key content
-        if idx != *tool_indices.last().unwrap_or(&usize::MAX) {
-            let compressed = compress_tool_result(&content);
-            let saved = content_len.saturating_sub(compressed.len());
-            messages[idx].content = serde_json::Value::String(compressed);
-            trimmed_total += saved;
-            tracing::info!(idx, content_len, compressed_len = content_len - saved, "Compressed old tool result");
-            continue;
-        }
-
-        // For the most recent tool result, trim with a bookmark
-        let overshoot_now = estimated - context_length;
-        let trim_chars = overshoot_now * 4 + 2000;
-        if content_len > trim_chars + 500 {
-            let keep = content_len - trim_chars;
-            let truncated = match content[..keep].rfind('\n') {
-                Some(pos) => &content[..pos],
-                None => &content[..keep],
-            };
-            let shown_lines = truncated.lines().count();
-            let total_lines = content.lines().count();
-            let new_content = format!(
-                "[Lines 1-{} of {} — trimmed to fit context window]\n{}\n\n[BOOKMARK: line {} — use file_read with start_line={} to continue]",
-                shown_lines, total_lines, truncated, shown_lines + 1, shown_lines + 1
-            );
-            trimmed_total += content_len - new_content.len();
-            messages[idx].content = serde_json::Value::String(new_content);
-            tracing::info!(idx, shown_lines, total_lines, "Trimmed latest tool result with bookmark");
-        }
-    }
-
-    let final_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-    tracing::warn!(
-        trimmed_total,
-        final_estimated_tokens = final_chars / 4 + 2000,
-        context_length,
-        "Context budget enforcement complete"
-    );
-}
-
-/// Compress a tool result to preserve key content while reducing size.
-/// Keeps pagination markers (file_read headers/bookmarks), the first ~2000 chars,
-/// last ~2000 chars, all section headings from the middle, and structural metadata.
-fn compress_tool_result(content: &str) -> String {
-    let total_lines = content.lines().count();
-    let total_chars = content.len();
-
-    // If already small, don't compress
-    if total_chars <= 8000 {
-        return content.to_string();
-    }
-
-    // Extract file_read pagination markers BEFORE compressing.
-    // These are critical — without them the model loses its reading position
-    // and re-reads the same pages in a loop.
-    let mut pagination_header = String::new();
-    let mut bookmark = String::new();
-
-    let first_line = content.lines().next().unwrap_or("");
-    if first_line.starts_with("[Lines ") || first_line.starts_with("[FILE SAVED") {
-        pagination_header = first_line.to_string();
-    }
-
-    let last_line = content.lines().last().unwrap_or("");
-    if last_line.contains("[BOOKMARK:") || last_line.contains("END OF FILE") {
-        bookmark = last_line.to_string();
-    }
-
-    // Strip the pagination markers from content before extracting head/tail
-    let inner = if !pagination_header.is_empty() {
-        let skip = pagination_header.len() + 1; // +1 for newline
-        &content[skip.min(content.len())..]
-    } else {
-        content
-    };
-
-    // Extract first ~2000 chars (preserve beginning context)
-    let head_end = inner.char_indices()
-        .take_while(|(i, _)| *i < 2000)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(inner.len().min(2000));
-    let head = match inner[..head_end].rfind('\n') {
-        Some(pos) => &inner[..pos],
-        None => &inner[..head_end],
-    };
-
-    // Extract last ~2000 chars (preserve ending context, excluding bookmark)
-    let inner_for_tail = if !bookmark.is_empty() {
-        let end = inner.len().saturating_sub(bookmark.len() + 1);
-        &inner[..end]
-    } else {
-        inner
-    };
-    let tail_start = inner_for_tail.len().saturating_sub(2000);
-    let tail = match inner_for_tail[tail_start..].find('\n') {
-        Some(pos) => &inner_for_tail[tail_start + pos + 1..],
-        None => &inner_for_tail[tail_start..],
-    };
-
-    // Extract section headings from the middle
-    let head_lines = head.lines().count();
-    let inner_total_lines = inner.lines().count();
-    let tail_line_start = inner_total_lines.saturating_sub(tail.lines().count());
-    let middle_headings: Vec<&str> = inner.lines()
-        .enumerate()
-        .filter(|(i, _)| *i >= head_lines && *i < tail_line_start)
-        .filter(|(_, line)| {
-            let trimmed = line.trim();
-            trimmed.starts_with('#') || trimmed.starts_with("---") || trimmed.starts_with("***")
-        })
-        .map(|(_, line)| line)
-        .collect();
-
-    let headings_section = if middle_headings.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n[Section headings from compressed region:]\n{}", middle_headings.join("\n"))
-    };
-
-    // Build compressed output — pagination markers always preserved
-    let mut output = String::new();
-
-    if !pagination_header.is_empty() {
-        output.push_str(&pagination_header);
-        output.push('\n');
-    }
-
-    output.push_str(&format!(
-        "[COMPRESSED — {} total chars, {} lines — reading position preserved]\n\
-         \n--- BEGIN (lines 1-{}) ---\n{}\n--- END OF HEAD ---\n\
-         \n[... {} chars / {} lines compressed ...]{}\n\
-         \n--- TAIL (lines {}-{}) ---\n{}\n--- END ---",
-        total_chars, total_lines,
-        head.lines().count(), head,
-        total_chars - head.len() - tail.len(),
-        tail_line_start - head_lines,
-        headings_section,
-        tail_line_start, inner_total_lines, tail,
-    ));
-
-    if !bookmark.is_empty() {
-        output.push('\n');
-        output.push_str(&bookmark);
-    }
-
-    output
-}
-
-/// Inject ReAct system instruction into messages.
-fn inject_react_instruction(
-    messages: &mut Vec<crate::provider::Message>,
-    objective: &str,
-    plan: Option<&str>,
-) {
-    let instruction = format!(
-        "You are now in ReAct (Reason-Act-Observe) mode.\n\
-         Objective: {}\n{}\n\
-         Use tools to accomplish the objective. When done, call `reply_request` with your final response.",
-        objective,
-        plan.map(|p| format!("Plan:\n{}", p)).unwrap_or_default(),
-    );
-    messages.push(crate::provider::Message::text("system", &instruction));
-}
-
-/// Build tool context summary for observer audit.
-pub fn build_tool_context(messages: &[crate::provider::Message]) -> String {
-    let mut entries: Vec<String> = Vec::new();
-    for (i, msg) in messages.iter().enumerate() {
-        if msg.role == "tool" {
-            let tool_name = find_tool_name(messages, i);
-            let result_text = msg.text_content();
-            entries.push(format!("[{}] {} → {}", entries.len() + 1, tool_name, result_text));
-        }
-    }
-    if entries.is_empty() {
-        String::new()
-    } else {
-        format!("Platform tools executed ({} calls):\n{}", entries.len(), entries.join("\n"))
-    }
-}
-
-/// Look backwards through messages to find the tool name for a tool result.
-fn find_tool_name(messages: &[crate::provider::Message], tool_msg_idx: usize) -> String {
-    let tool_call_id = messages[tool_msg_idx].tool_call_id.as_deref().unwrap_or("");
-    for j in (0..tool_msg_idx).rev() {
-        if messages[j].role == "assistant" {
-            if let Some(tcs) = &messages[j].tool_calls {
-                for tc in tcs {
-                    if tc["id"].as_str() == Some(tool_call_id) {
-                        return tc["function"]["name"]
-                            .as_str()
-                            .unwrap_or("unknown")
-                            .to_string();
-                    }
-                }
-            }
-        }
-    }
-    "unknown".to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_tool_context_empty() {
-        let messages: Vec<crate::provider::Message> = Vec::new();
-        assert!(build_tool_context(&messages).is_empty());
-    }
-
-    #[test]
-    fn test_find_tool_name_no_match() {
-        let messages = vec![
-            crate::provider::Message::text("user", "hello"),
-        ];
-        assert_eq!(find_tool_name(&messages, 0), "unknown");
-    }
-
-    #[test]
-    fn test_inject_react_instruction() {
-        let mut messages = Vec::new();
-        inject_react_instruction(&mut messages, "Test objective", Some("Step 1"));
-        assert_eq!(messages.len(), 1);
-        let content = messages[0].text_content();
-        assert!(content.contains("Test objective"));
-        assert!(content.contains("Step 1"));
-    }
-
-    #[test]
-    fn test_inject_react_no_plan() {
-        let mut messages = Vec::new();
-        inject_react_instruction(&mut messages, "Simple task", None);
-        assert_eq!(messages.len(), 1);
-        assert!(messages[0].text_content().contains("Simple task"));
-    }
 }

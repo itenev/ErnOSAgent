@@ -13,6 +13,8 @@ pub mod codes;
 pub mod platforms;
 pub mod platform_ingest;
 pub mod platform_exec;
+pub mod platform_context;
+pub mod platform_reinfer;
 pub mod voice;
 pub mod video;
 pub mod upload;

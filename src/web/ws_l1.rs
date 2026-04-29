@@ -87,7 +87,19 @@ pub async fn run_l1_tool_chain(
         send_ws(sender, "tool_executing", &serde_json::json!({"name": &current_tc.name, "id": &current_tc.id})).await;
         chain_tools.push((current_tc.name.clone(), current_tc.arguments.clone()));
 
-        let result = crate::web::tool_dispatch::execute_tool_with_state(state, &current_tc).await;
+        let mut result = crate::web::tool_dispatch::execute_tool_with_state(state, &current_tc).await;
+
+        // Auto-stitch: if file_read produced a [BOOKMARK], fetch remaining pages
+        if current_tc.name == "file_read" && result.success {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&current_tc.arguments) {
+                if crate::tools::file_read::parse_bookmark(&result.output).is_some() {
+                    result.output = crate::tools::file_read::auto_stitch(
+                        &result.output, &args, state.model_spec.context_length,
+                    ).await;
+                }
+            }
+        }
+
         tracing::info!(tool = %current_tc.name, success = result.success, output_len = result.output.len(), "L1 tool: execution complete");
 
         send_ws(sender, "tool_completed", &serde_json::json!({

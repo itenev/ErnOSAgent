@@ -228,7 +228,17 @@ pub(crate) async fn deliver_response(
 
     // Deliver response with interactive buttons (after sanitization)
     if hub_resp.response.is_empty() {
-        tracing::warn!(platform = %platform, "Hub returned empty response");
+        tracing::error!(
+            platform = %platform, channel = %channel_id,
+            "Hub returned empty response — delivering error to user"
+        );
+        let reg = registry.read().await;
+        let _ = reg.reply_with_components(
+            platform, channel_id, message_id,
+            "⚠️ Inference returned no content. This usually means the context window is full \
+             or the model timed out. Try starting a new session.",
+            &[],
+        ).await;
     } else {
         let scrub = crate::web::output_sanitizer::scrub_tool_leaks(&hub_resp.response);
         let final_text = if scrub.text.is_empty() && scrub.had_leak {
