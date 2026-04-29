@@ -18,6 +18,10 @@ pub struct HudContext {
     pub document_count: usize,
     pub golden_count: usize,
     pub rejection_count: usize,
+    pub curriculum_count: usize,
+    pub review_total: usize,
+    pub review_due: usize,
+    pub quarantine_count: usize,
     pub observer_enabled: bool,
     pub conversation_stack: Option<crate::prompt::conversation_stack::ConversationStack>,
 }
@@ -67,14 +71,19 @@ fn format_hud_template(
          - Documents: {} chunks\n\n\
          ## Learning Buffers\n\
          - Golden (SFT): {} samples\n\
-         - Rejection (DPO): {} pairs\n\n\
+         - Rejection (DPO): {} pairs\n\
+         - Quarantine: {} pending\n\n\
+         ## Curriculum\n\
+         - Courses: {}\n\
+         - Review cards: {} total, {} due\n\n\
          ## Observer: {}",
         utc_now.format("%A, %B %d, %Y at %H:%M:%S UTC"),
         local_now.format("%A, %B %d, %Y at %H:%M:%S %Z"),
         ctx.model_name, ctx.provider, ctx.context_length,
         ctx.session_id, ctx.turn_count, ctx.platform,
         ctx.timeline_count, ctx.lesson_count, ctx.procedure_count, ctx.scratchpad_count, ctx.document_count,
-        ctx.golden_count, ctx.rejection_count,
+        ctx.golden_count, ctx.rejection_count, ctx.quarantine_count,
+        ctx.curriculum_count, ctx.review_total, ctx.review_due,
         if ctx.observer_enabled { "Enabled" } else { "Disabled" },
     )
 }
@@ -99,6 +108,10 @@ mod tests {
             document_count: 5,
             golden_count: 2,
             rejection_count: 0,
+            curriculum_count: 3,
+            review_total: 15,
+            review_due: 4,
+            quarantine_count: 1,
             observer_enabled: true,
             conversation_stack: None,
         };
@@ -129,6 +142,10 @@ mod tests {
             document_count: 0,
             golden_count: 0,
             rejection_count: 0,
+            curriculum_count: 0,
+            review_total: 0,
+            review_due: 0,
+            quarantine_count: 0,
             observer_enabled: false,
             conversation_stack: None,
         };

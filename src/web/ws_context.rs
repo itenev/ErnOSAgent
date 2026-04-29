@@ -62,6 +62,13 @@ pub async fn build_chat_context(
         if stack.active_topic.is_empty() { None } else { Some(stack) }
     };
 
+    let curriculum_count = state.curriculum.read().await.course_count();
+    let (review_total, review_due) = {
+        let deck = state.review_deck.read().await;
+        (deck.count(), deck.due_count(chrono::Utc::now()))
+    };
+    let quarantine_count = state.quarantine.read().await.count();
+
     let hud = crate::prompt::hud::build_hud(&crate::prompt::hud::HudContext {
         model_name: state.model_spec.name.clone(),
         provider: state.config.general.active_provider.clone(),
@@ -76,6 +83,10 @@ pub async fn build_chat_context(
         document_count: memory_counts.4,
         golden_count,
         rejection_count,
+        curriculum_count,
+        review_total,
+        review_due,
+        quarantine_count,
         observer_enabled: state.config.observer.enabled,
         conversation_stack,
     });
