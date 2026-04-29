@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod registry;
 pub mod router;
 pub mod router_stream;
+pub mod router_thread;
 pub mod router_interactions;
 
 pub mod discord;

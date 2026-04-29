@@ -14,6 +14,13 @@ The learning subsystem provides on-device incremental training. All code lives i
 | `observer_buffer.rs` | Observer-scored sample buffer |
 | `manifest.rs` | Training run metadata tracking |
 | `distill.rs` | Knowledge distillation utilities |
+| `curriculum.rs` | Course/lesson/scene data model, progress tracking, JSON persistence |
+| `verification.rs` | Ground truth verification gate + `QuarantineBuffer` |
+| `student.rs` | Student session loop — scene processing, local buffer accumulation |
+| `research.rs` | PhD research engine — arXiv ingestion, hypothesis generation, adversarial defense |
+| `mlx_bridge.rs` | MLX subprocess LoRA fine-tuning bridge — JSONL prep, EWC snapshots |
+| `graduation.rs` | Education level promotion — gate criteria, adapter validation, model fusion |
+| `review.rs` | Spaced repetition — Leitner box review cards, retention stats |
 
 ### LoRA Subsystem (`src/learning/lora/`)
 
@@ -200,3 +207,115 @@ The `learning` tool (`src/tools/learning_tool.rs`) provides live access to the t
 ### LoRA Adapter Loading
 
 `LlamaCppConfig.lora_adapter` specifies a trained adapter to load at inference via `--lora` flag. After the scheduler completes a sleep cycle and saves an adapter, a server restart loads it into the model.
+
+## Schooling Pipeline (K-12 → PhD)
+
+The schooling pipeline enables Ern-OS to autonomously progress through a full education system. It uses 5 education levels with incremental weight updates at each stage.
+
+### Education Levels
+
+| Level | EWC Lambda | Pass Threshold | Learning Mode |
+|-------|-----------|----------------|---------------|
+| Primary | 0.1 | 0.5 | Read → Repeat → Quiz |
+| Secondary | 0.3 | 0.6 | Read → Reason → Apply |
+| Undergraduate | 0.5 | 0.65 | Read → Analyze → Synthesize |
+| Masters | 0.7 | 0.75 | Read → Evaluate → Create |
+| Doctoral | 0.9 | 0.8 | Survey → Hypothesize → Experiment → Defend |
+
+### Curriculum Store (`curriculum.rs`)
+
+Manages courses, lessons, scenes, and student progress. Persists to `data/curriculum/` as JSON.
+
+- **Course** — title, level, subject, lessons, prerequisites, completion criteria, source
+- **Lesson** — ordered scenes with objectives and prerequisites
+- **Scene** — teaching unit with scene type (Quiz, Lecture, Exercise, Essay, etc.), interaction type, expected output, and difficulty
+- **CourseProgress** — per-course completion tracking with quiz scores
+
+Curriculum sources: OpenMAIC ZIP, OSSU GitHub, arXiv papers, custom JSONL.
+
+### Verification Gate (`verification.rs`)
+
+Every student answer passes through a verification stage before entering the Golden Buffer:
+
+1. **Confirmed** — answer matches ground truth or external verification → Golden Buffer
+2. **Contradicted** — answer proven wrong → Rejection Buffer
+3. **Unverifiable** — cannot confirm/deny → Quarantine Buffer
+
+This prevents hallucination feedback loops where the model trains on its own wrong answers.
+
+### Student Loop (`student.rs`)
+
+Processes scenes using `StudentSession` with local buffers:
+
+1. Scene prompt generated per education level and interaction type
+2. Student answer via `provider.chat_sync()`
+3. Verification against expected output
+4. Results accumulated in local buffers (no shared locks during inference)
+5. Batch flush to shared state at lesson end (microsecond lock durations)
+
+Preemption: if `cancel_flag` is set (user activity), saves position and returns.
+
+### Research Engine (`research.rs`)
+
+PhD-level learning — manages `ResearchProject` lifecycle:
+
+1. **Literature Survey** — arXiv search via `web_search`, paper metadata extraction, embedding storage
+2. **Hypothesis Generation** — novelty and testability scoring via LLM
+3. **Experimentation** — handled by curriculum scenes
+4. **Paper Writing** — handled by curriculum scenes
+5. **Defense** — adversarial self-play (Model A attacks, Model B defends, both scored)
+
+Gate criteria: survey needs ≥10 papers, hypothesis needs ≥3 scored, defense needs ≥3 rounds with avg quality >0.7.
+
+### MLX Training Bridge (`mlx_bridge.rs`)
+
+Subprocess-based LoRA fine-tuning using Apple's MLX framework:
+
+- `prepare_training_data()` — converts `TrainingSample` → JSONL chat format
+- `snapshot_ewc_params()` — saves current adapter weights as EWC θ* reference
+- `run_mlx_lora()` — shells out to `python3 -m mlx_lm.lora` with level-scaled hyperparameters
+- `fuse_adapter()` — `python3 -m mlx_lm.fuse` to merge adapter into base model
+- `check_mlx_available()` — graceful feature gating (disabled if Python/MLX not installed)
+
+Learning rate scales with education level: Primary 1e-5, Secondary 5e-6, Undergraduate 2e-6, Masters 1e-6, Doctoral 5e-7.
+
+### Graduation Pipeline (`graduation.rs`)
+
+Auto-promotes between education levels when gate criteria are met:
+
+| Level | Required Courses | Min Score | Capstone |
+|-------|-----------------|-----------|----------|
+| Primary → Secondary | 3 | 0.60 | No |
+| Secondary → Undergraduate | 4 | 0.65 | No |
+| Undergraduate → Masters | 5 | 0.70 | No |
+| Masters → Doctoral | 3 | 0.75 | Yes |
+| Doctoral → Complete | 1 | 0.80 | Yes (defense) |
+
+Graduation history persisted to `data/graduation_history.json`.
+
+### Spaced Repetition (`review.rs`)
+
+Leitner box system preventing curriculum-level catastrophic forgetting:
+
+- **Box 1**: review daily (1 day)
+- **Box 2**: review every 3 days
+- **Box 3**: review weekly (7 days)
+- **Box 4**: review biweekly (14 days)
+- **Box 5**: review monthly (30 days)
+
+Correct → promote one box. Wrong → demote to box 1 + rejection buffer for retraining.
+
+Cards generated from completed course Quiz/Exercise/CriticalAnalysis scenes with expected outputs. Deck persisted to `data/review_deck.json`.
+
+### Scheduler Jobs
+
+Three learning jobs run via the cron engine (`src/scheduler/learning_tasks.rs`):
+
+| Job | Interval | Default |
+|-----|----------|---------|
+| `attend_class` | 4 hours | Disabled |
+| `conduct_research` | 24 hours | Disabled |
+| `spaced_review` | 12 hours | Disabled |
+
+All disabled until the user adds courses to the curriculum. Enable via the scheduler API or WebUI.
+

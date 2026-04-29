@@ -5,6 +5,9 @@ use crate::agents::teams::TeamRegistry;
 use crate::config::AppConfig;
 use crate::learning::buffers::GoldenBuffer;
 use crate::learning::buffers_rejection::RejectionBuffer;
+use crate::learning::curriculum::CurriculumStore;
+use crate::learning::verification::QuarantineBuffer;
+use crate::learning::review::ReviewDeck;
 use crate::memory::MemoryManager;
 use crate::model::ModelSpec;
 use crate::provider::Provider;
@@ -51,4 +54,10 @@ pub struct AppState {
     /// each new inference call. Uses AtomicBool instead of CancellationToken
     /// because the flag must be resettable (CancellationToken is single-use).
     pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Curriculum store — courses, lessons, and progress for the AI schooling pipeline.
+    pub curriculum: Arc<RwLock<CurriculumStore>>,
+    /// Quarantine buffer — unverified student answers awaiting external verification.
+    pub quarantine: Arc<RwLock<QuarantineBuffer>>,
+    /// Review deck — spaced repetition cards for curriculum retention.
+    pub review_deck: Arc<RwLock<ReviewDeck>>,
 }

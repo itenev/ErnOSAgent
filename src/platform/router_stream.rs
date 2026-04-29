@@ -67,6 +67,7 @@ async fn parse_sse_stream(
     let mut has_plan = false;
     let mut plan_markdown = None;
     let mut sse_error: Option<String> = None;
+    let mut last_thinking_post = std::time::Instant::now();
 
     let mut stream = resp.bytes_stream();
     let mut line_buf = String::new();
@@ -96,6 +97,7 @@ async fn parse_sse_stream(
                         &mut has_plan, &mut plan_markdown,
                         &mut sse_error,
                         registry, platform, thinking_thread_id,
+                        &mut last_thinking_post,
                     ).await;
                 }
                 current_event_type.clear();
@@ -137,12 +139,13 @@ async fn handle_sse_event(
     sse_error: &mut Option<String>,
     registry: &Arc<RwLock<PlatformRegistry>>,
     platform: &str, tid: &Option<String>,
+    last_thinking_post: &mut std::time::Instant,
 ) {
     match event_type {
         "thinking" => {
             if let Some(chunk) = val.get("chunk").and_then(|v| v.as_str()) {
                 thinking.push_str(chunk);
-                post_thinking_periodic(registry, platform, tid, thinking).await;
+                post_thinking_periodic(registry, platform, tid, thinking, last_thinking_post).await;
             }
         }
         "tool_start" | "tool_call" => {
@@ -182,7 +185,7 @@ async fn handle_sse_event(
             // Legacy: no event: line — use heuristic field-matching
             handle_legacy_event(val, response, thinking, tool_events,
                 session_id, has_plan, plan_markdown,
-                registry, platform, tid).await;
+                registry, platform, tid, last_thinking_post).await;
         }
         other => {
             tracing::debug!(event_type = %other, "Unknown SSE event type — ignoring");
@@ -219,10 +222,11 @@ async fn handle_legacy_event(
     has_plan: &mut bool, plan_markdown: &mut Option<String>,
     registry: &Arc<RwLock<PlatformRegistry>>,
     platform: &str, tid: &Option<String>,
+    last_thinking_post: &mut std::time::Instant,
 ) {
     if let Some(chunk) = val.get("chunk").and_then(|v| v.as_str()) {
         thinking.push_str(chunk);
-        post_thinking_periodic(registry, platform, tid, thinking).await;
+        post_thinking_periodic(registry, platform, tid, thinking, last_thinking_post).await;
     } else if val.get("name").is_some() && val.get("success").is_some() {
         tool_events.push(val.clone());
         if let Some(tid) = tid {
@@ -235,14 +239,17 @@ async fn handle_legacy_event(
     }
 }
 
-/// Post thinking progress to the thread every ~200 chars.
+/// Post thinking progress to the thread at most once every 3 seconds.
+/// The `last_post` timestamp is owned by the caller and updated here.
 async fn post_thinking_periodic(
     registry: &Arc<RwLock<PlatformRegistry>>,
     platform: &str, tid: &Option<String>, thinking: &str,
+    last_post: &mut std::time::Instant,
 ) {
     if let Some(tid) = tid {
-        if thinking.len() % 200 < 50 {
+        if last_post.elapsed() >= std::time::Duration::from_secs(3) {
             post_thinking_preview(registry, platform, tid, thinking).await;
+            *last_post = std::time::Instant::now();
         }
     }
 }

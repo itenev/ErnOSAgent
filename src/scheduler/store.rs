@@ -164,6 +164,36 @@ fn default_system_jobs() -> Vec<CronJob> {
             created_at: now, last_run: None, last_result: None,
             run_count: 0, builtin: true,
         },
+        CronJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "attend_class".into(),
+            description: "Autonomous learning — attend the next lesson from curriculum".into(),
+            schedule: JobSchedule::Interval(14400), // Every 4 hours
+            task: JobTask::AttendClass(String::new()), // Empty = pick next available
+            enabled: false, // Disabled until user adds courses
+            created_at: now, last_run: None, last_result: None,
+            run_count: 0, builtin: true,
+        },
+        CronJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "conduct_research".into(),
+            description: "PhD research — advance the next research project phase".into(),
+            schedule: JobSchedule::Interval(86400), // Every 24 hours
+            task: JobTask::ConductResearch(String::new()),
+            enabled: false, // Disabled until user creates a research project
+            created_at: now, last_run: None, last_result: None,
+            run_count: 0, builtin: true,
+        },
+        CronJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "spaced_review".into(),
+            description: "Review due cards using Leitner spaced repetition".into(),
+            schedule: JobSchedule::Interval(43200), // Every 12 hours
+            task: JobTask::SpacedReview,
+            enabled: false, // Disabled until courses are completed
+            created_at: now, last_run: None, last_result: None,
+            run_count: 0, builtin: true,
+        },
     ]
 }
 
@@ -176,7 +206,7 @@ mod tests {
     fn test_load_creates_defaults() {
         let tmp = TempDir::new().unwrap();
         let store = JobStore::load(tmp.path()).unwrap();
-        assert_eq!(store.jobs.len(), 3);
+        assert_eq!(store.jobs.len(), 6);
         assert!(store.jobs.iter().all(|j| j.builtin));
     }
 
@@ -195,10 +225,10 @@ mod tests {
             run_count: 0, builtin: false,
         };
         store.add(custom).unwrap();
-        assert_eq!(store.jobs.len(), 4);
+        assert_eq!(store.jobs.len(), 7);
 
         assert!(store.remove("custom-1").unwrap());
-        assert_eq!(store.jobs.len(), 3);
+        assert_eq!(store.jobs.len(), 6);
     }
 
     #[test]
@@ -229,7 +259,7 @@ mod tests {
         }
         // Reload from disk
         let store2 = JobStore::load(tmp.path()).unwrap();
-        // Should have 3 builtins (not duplicated)
-        assert_eq!(store2.jobs.len(), 3);
+        // Should have 4 builtins (not duplicated)
+        assert_eq!(store2.jobs.len(), 6);
     }
 }

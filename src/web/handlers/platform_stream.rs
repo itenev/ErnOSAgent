@@ -111,7 +111,7 @@ async fn run_streaming_pipeline(
 
     // Consume stream using the unified consumer with SSE sink
     use crate::inference::stream_consumer::{self, ConsumeResult, SseSink};
-    let mut sink = SseSink { tx: &tx };
+    let mut sink = SseSink::new(&tx);
     let result = stream_consumer::consume_stream(rx_stream, &mut sink).await;
 
     // Handle spiral: re-prompt with thinking disabled

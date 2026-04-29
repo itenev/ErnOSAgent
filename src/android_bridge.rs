@@ -237,5 +237,21 @@ fn build_app_state(
             }),
         )),
         cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        curriculum: std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::learning::curriculum::CurriculumStore::open(
+                &data_dir.join("curriculum"),
+            ).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to init curriculum — creating empty");
+                crate::learning::curriculum::CurriculumStore::open(
+                    &std::path::Path::new("/tmp/ern-os-curriculum"),
+                ).expect("fallback curriculum")
+            }),
+        )),
+        quarantine: std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::learning::verification::QuarantineBuffer::new(),
+        )),
+        review_deck: std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::learning::review::ReviewDeck::new(),
+        )),
     })
 }

@@ -115,22 +115,54 @@ impl<'a> StreamSink for WebSocketSink<'a> {
 }
 
 /// SSE sink — emits Server-Sent Events for Discord thinking thread.
+/// Buffers thinking tokens and only emits every ~200 chars to avoid
+/// flooding the Discord API with per-token messages.
 pub struct SseSink<'a> {
     pub tx: &'a tokio::sync::mpsc::Sender<
         Result<axum::response::sse::Event, std::convert::Infallible>,
     >,
+    thinking_buf: String,
 }
 
-impl<'a> StreamSink for SseSink<'a> {
-    async fn on_thinking(&mut self, delta: &str) {
+impl<'a> SseSink<'a> {
+    pub fn new(tx: &'a tokio::sync::mpsc::Sender<
+        Result<axum::response::sse::Event, std::convert::Infallible>,
+    >) -> Self {
+        Self { tx, thinking_buf: String::new() }
+    }
+
+    /// Flush any accumulated thinking tokens as a single SSE event.
+    async fn flush_thinking(&mut self) {
+        if self.thinking_buf.is_empty() {
+            return;
+        }
+        let chunk = std::mem::take(&mut self.thinking_buf);
         let _ = self.tx.send(Ok(
             axum::response::sse::Event::default()
                 .event("thinking")
-                .data(serde_json::json!({"chunk": delta}).to_string()),
+                .data(serde_json::json!({"chunk": chunk}).to_string()),
         )).await;
+    }
+}
+
+/// Minimum characters to accumulate before emitting a thinking SSE event.
+const THINKING_BATCH_SIZE: usize = 200;
+
+impl<'a> StreamSink for SseSink<'a> {
+    async fn on_thinking(&mut self, delta: &str) {
+        self.thinking_buf.push_str(delta);
+        if self.thinking_buf.len() >= THINKING_BATCH_SIZE {
+            self.flush_thinking().await;
+        }
+    }
+
+    async fn on_text(&mut self, _delta: &str) {
+        // Flush any pending thinking before text arrives
+        self.flush_thinking().await;
     }
 
     async fn on_tool_call(&mut self, _id: &str, name: &str, _args: &str) {
+        self.flush_thinking().await;
         let _ = self.tx.send(Ok(
             axum::response::sse::Event::default()
                 .event("tool_call")
@@ -138,7 +170,12 @@ impl<'a> StreamSink for SseSink<'a> {
         )).await;
     }
 
+    async fn on_done(&mut self) {
+        self.flush_thinking().await;
+    }
+
     async fn on_spiral_detected(&mut self, thinking_len: usize) {
+        self.flush_thinking().await;
         let _ = self.tx.send(Ok(
             axum::response::sse::Event::default()
                 .event("spiral_detected")
@@ -147,6 +184,7 @@ impl<'a> StreamSink for SseSink<'a> {
     }
 
     async fn on_error(&mut self, error: &str) {
+        self.flush_thinking().await;
         let _ = self.tx.send(Ok(
             axum::response::sse::Event::default()
                 .event("error")

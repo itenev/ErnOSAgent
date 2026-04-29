@@ -53,7 +53,7 @@ All source lives under `src/`. 19 top-level modules:
 | `config` | `src/config/mod.rs` | TOML config loading with defaults (includes CodesConfig, TtsConfig) |
 | `inference` | `src/inference/` | Dual-layer engine: fast_reply.rs, react_loop.rs, react_observer.rs, router.rs |
 | `interpretability` | `src/interpretability/` | SAE training (trainer.rs), feature extraction, steering bridge, live analysis, divergence, snapshots |
-| `learning` | `src/learning/` | LoRA (6 loss functions, adapters, optimizer), GRPO (generation, rewards, training), sleep cycles, distillation, teacher |
+| `learning` | `src/learning/` | LoRA (6 loss functions, adapters, optimizer), GRPO, sleep cycles, distillation, teacher, curriculum, student loop, verification gate, research engine, MLX bridge, graduation, spaced repetition |
 | `logging` | `src/logging/mod.rs` | Structured tracing, rotating file appender |
 | `memory` | `src/memory/` | 7-tier persistent memory: timeline, lessons, procedures, scratchpad, synaptic (graph + plasticity + relationships + query), embeddings, consolidation |
 | `model` | `src/model/mod.rs` | ModelSpec struct (auto-derived from provider) |
@@ -61,7 +61,7 @@ All source lives under `src/`. 19 top-level modules:
 | `platform` | `src/platform/` | Platform adapter trait, registry, router — connects Discord/Telegram as WebSocket clients |
 | `prompt` | `src/prompt/` | System prompt assembly, identity loading, HUD builder (hud.rs), conversation stack tracker (conversation_stack.rs) |
 | `provider` | `src/provider/` | Provider trait + 3 implementations: llamacpp (with embed), ollama, openai_compat, stream_parser |
-| `scheduler` | `src/scheduler/` | Cron engine: job definitions (job.rs), persistent store (store.rs), 8 built-in system jobs |
+| `scheduler` | `src/scheduler/` | Cron engine: job definitions (job.rs), persistent store (store.rs), learning task handlers (learning_tasks.rs), 7 built-in system jobs |
 | `session` | `src/session/mod.rs` | JSON-backed session CRUD with pin, archive, fork, search, reactions |
 | `steering` | `src/steering/` | Activation steering vectors (vectors.rs), server interface (server.rs) |
 | `tools` | `src/tools/` | 31-tool registry: schema definitions + tool implementation files |
@@ -122,6 +122,12 @@ pub struct AppState {
     pub mutable_config: Arc<RwLock<AppConfig>>,
     pub resume_message: Arc<RwLock<Option<String>>>,
     pub sae: Arc<RwLock<Option<SparseAutoencoder>>>,
+    pub live_monitor: Arc<RwLock<LiveMonitor>>,
+    pub snapshot_store: Arc<RwLock<SnapshotStore>>,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub curriculum: Arc<RwLock<CurriculumStore>>,
+    pub quarantine: Arc<RwLock<QuarantineBuffer>>,
+    pub review_deck: Arc<RwLock<ReviewDeck>>,
 }
 ```
 
@@ -131,6 +137,10 @@ pub struct AppState {
 - `Arc<RwLock<BrowserState>>` lazily initialized headless Chromium instance
 - `Arc<RwLock<PlatformRegistry>>` manages Discord/Telegram adapter connections
 - `Arc<RwLock<AppConfig>>` (`mutable_config`) — runtime-updatable config for Settings UI changes
+- `Arc<AtomicBool>` (`cancel_flag`) — inference cancellation for user-activity preemption
+- `Arc<RwLock<CurriculumStore>>` manages courses, progress, and lesson scheduling
+- `Arc<RwLock<QuarantineBuffer>>` holds unverified student answers pending external verification
+- `Arc<RwLock<ReviewDeck>>` Leitner box review cards for spaced repetition
 
 ## Auto-Starting Services
 
@@ -196,18 +206,17 @@ The scheduler (`src/scheduler/`) is a job-driven cron engine with 15-second tick
 - **Cron** — standard cron expressions (via `cron` crate)
 - **Once** — execute at a specific UTC datetime
 
-### 8 Built-in System Jobs
+### 7 Built-in System Jobs
 
 | Job | Schedule | Task |
 |-----|----------|------|
 | `sleep_cycle` | every 5m | Drain buffers → LoRA training |
 | `lesson_decay` | every 5m | Hebbian forgetting (0.98 factor) |
-| `memory_consolidate` | every 1h | Tier consolidation check |
-| `snapshot_capture` | every 30m | Neural activation snapshot |
 | `synaptic_prune` | every 2h | Weak edge decay |
-| `buffer_flush` | every 10m | Persist training buffers |
 | `log_rotate` | daily midnight | Remove logs >7 days old |
-| `health_check` | every 60s | Self-diagnostic |
+| `attend_class` | every 4h | Process next curriculum lesson (disabled by default) |
+| `conduct_research` | every 24h | Advance PhD research project phase (disabled by default) |
+| `spaced_review` | every 12h | Review due Leitner box cards (disabled by default) |
 
 ## File Size Governance
 

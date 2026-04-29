@@ -381,6 +381,17 @@ mod tests {
                 ).unwrap(),
             )),
             cancel_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            curriculum: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::learning::curriculum::CurriculumStore::open(
+                    &tmp.path().join("curriculum"),
+                ).unwrap(),
+            )),
+            quarantine: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::learning::verification::QuarantineBuffer::new(),
+            )),
+            review_deck: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::learning::review::ReviewDeck::new(),
+            )),
         };
         let result = rt.block_on(execute_tool_with_state(&state, &tc));
         assert!(result.output.contains("Unknown tool"));

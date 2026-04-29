@@ -71,7 +71,7 @@ User → WebUI (localhost:3000)
 | [Configuration](configuration.md) | All config options with types and defaults |
 | [Memory System](memory.md) | 7-tier memory: timeline, scratchpad, lessons, synaptic, procedures, embeddings, consolidation |
 | [Inference Pipeline](inference.md) | Dual-layer engine, ReAct loop, observer audit |
-| [Learning Pipeline](learning.md) | LoRA, GRPO, sleep consolidation, preference training |
+| [Learning Pipeline](learning.md) | LoRA, GRPO, sleep consolidation, preference training, curriculum schooling (K-12 → PhD), research engine, spaced repetition |
 | [Tools](tools.md) | 29-tool registry with schemas, parallel execution |
 | [Interpretability](interpretability.md) | SAE, feature analysis, steering vectors, divergence tracking |
 | [Provider Interface](providers.md) | Provider trait, implementations, model neutrality |
@@ -84,7 +84,7 @@ User → WebUI (localhost:3000)
 | Language | Rust (Edition 2021) |
 | Source files | 183 `.rs` files |
 | Lines of code | ~29,000 (src only) |
-| Tests | 479 passing (403 lib + 76 e2e) |
+| Tests | 674 passing (598 lib + 76 e2e) |
 | Test failures | 0 |
 | Compiler warnings | 0 |
 | Modules | 19 top-level |

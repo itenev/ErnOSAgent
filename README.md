@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" />
-  <img src="https://img.shields.io/badge/tests-479%20passing-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/tests-674%20passing-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/warnings-0-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
 </p>
@@ -186,6 +186,11 @@ Ern-OS has a built-in learning pipeline for continuous self-improvement:
 - **Rejection Buffer** — captures Observer-rejected responses for preference training (DPO/GRPO)
 - **Sleep Consolidation** — scheduled memory compression, lesson extraction, and skill synthesis
 - **LoRA Training** — native Candle-based LoRA on Apple Silicon (Metal-accelerated)
+- **Curriculum Schooling** — autonomous K-12 → PhD education pipeline with course/lesson/scene progression
+- **Research Engine** — arXiv paper ingestion, hypothesis generation, adversarial thesis defense
+- **Spaced Repetition** — Leitner box review cards with 5-interval scheduling (1/3/7/14/30 days)
+- **Graduation Pipeline** — automatic level promotion with gate criteria and adapter validation
+- **MLX Bridge** — subprocess LoRA fine-tuning via Apple MLX for real model weight updates
 
 ## Customisation
 
@@ -228,7 +233,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 | Language | Rust (Edition 2021) |
 | Source files | 183 `.rs` files |
 | Lines of code | ~29,000 |
-| Tests | 479 passing (403 lib + 76 e2e) |
+| Tests | 674 passing (598 lib + 76 e2e) |
 | Test failures | 0 |
 | Compiler warnings | 0 |
 | Tools | 31 unique (22 in L1, 29 in L2) |
@@ -246,7 +251,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 | [Configuration](docs/configuration.md) | All config options with types and defaults |
 | [Memory System](docs/memory.md) | 7-tier memory architecture and consolidation |
 | [Inference Pipeline](docs/inference.md) | Dual-layer engine, ReAct loop, observer audit |
-| [Learning Pipeline](docs/learning.md) | LoRA, GRPO, sleep consolidation, preference training |
+| [Learning Pipeline](docs/learning.md) | LoRA, GRPO, sleep consolidation, curriculum schooling (K-12 → PhD), research engine, spaced repetition |
 | [Tools](docs/tools.md) | 29-tool registry with schemas and parallel execution |
 | [Interpretability](docs/interpretability.md) | SAE, feature analysis, steering vectors |
 | [Provider Interface](docs/providers.md) | Provider trait, implementations, model neutrality |

@@ -5,6 +5,7 @@ pub mod ws_l1;
 pub mod ws_learning;
 pub mod ws_stream;
 pub mod ws_react;
+pub mod ws_react_helpers;
 pub mod ws_context;
 pub mod ws_plans;
 pub mod state;

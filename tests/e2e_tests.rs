@@ -233,6 +233,17 @@ mod state_tests {
                 ).unwrap(),
             )),
             cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            curriculum: Arc::new(RwLock::new(
+                ern_os::learning::curriculum::CurriculumStore::open(
+                    &p.join("curriculum"),
+                ).unwrap(),
+            )),
+            quarantine: Arc::new(RwLock::new(
+                ern_os::learning::verification::QuarantineBuffer::new(),
+            )),
+            review_deck: Arc::new(RwLock::new(
+                ern_os::learning::review::ReviewDeck::new(),
+            )),
         }
     }
 

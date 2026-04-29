@@ -74,6 +74,9 @@ async fn execute_task(task: &JobTask, state: &AppState) -> (bool, String) {
         JobTask::LogRotate => run_log_rotate().await,
         JobTask::Custom(cmd) => run_custom_command(cmd).await,
         JobTask::Prompt(prompt) => run_prompt_job(prompt, state).await,
+        JobTask::AttendClass(course_id) => learning_tasks::run_attend_class(course_id, state).await,
+        JobTask::ConductResearch(project_id) => learning_tasks::run_conduct_research(project_id, state).await,
+        JobTask::SpacedReview => learning_tasks::run_spaced_review(state).await,
     }
 }
 
@@ -227,6 +230,8 @@ async fn deliver_to_connected_platforms(state: &AppState, prompt: &str, result: 
         }
     }
 }
+
+mod learning_tasks;
 
 #[cfg(test)]
 mod tests {

@@ -244,6 +244,21 @@ fn build_app_state(
     let teams = ern_os::agents::teams::TeamRegistry::new(&data_dir)
         .context("Failed to initialise team registry")?;
 
+    let curriculum = ern_os::learning::curriculum::CurriculumStore::open(
+        &data_dir.join("curriculum"),
+    ).context("Failed to initialise curriculum store")?;
+    tracing::info!(courses = curriculum.course_count(), "Curriculum store initialised");
+
+    let quarantine = ern_os::learning::verification::QuarantineBuffer::open(
+        &data_dir.join("quarantine.json"),
+    ).context("Failed to initialise quarantine buffer")?;
+    tracing::info!(quarantine = quarantine.count(), "Quarantine buffer initialised");
+
+    let review_deck = ern_os::learning::review::ReviewDeck::open(
+        &data_dir.join("review_deck.json"),
+    ).context("Failed to initialise review deck")?;
+    tracing::info!(cards = review_deck.count(), "Review deck initialised");
+
     Ok(ern_os::web::state::AppState {
         config: Arc::new(config.clone()),
         model_spec: Arc::new(model_spec),
@@ -286,6 +301,9 @@ fn build_app_state(
             }),
         )),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        curriculum: Arc::new(RwLock::new(curriculum)),
+        quarantine: Arc::new(RwLock::new(quarantine)),
+        review_deck: Arc::new(RwLock::new(review_deck)),
     })
 }
 

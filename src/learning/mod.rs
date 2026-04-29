@@ -10,6 +10,13 @@ pub mod teacher;
 pub mod manifest;
 pub mod distill;
 pub mod sleep;
+pub mod curriculum;
+pub mod verification;
+pub mod student;
+pub mod research;
+pub mod mlx_bridge;
+pub mod graduation;
+pub mod review;
 
 use serde::{Deserialize, Serialize};
 

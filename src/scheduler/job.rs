@@ -44,6 +44,14 @@ pub enum JobTask {
     /// Natural-language prompt sent through the L1 inference pipeline.
     /// The agent can use any tools available to fulfill the instruction.
     Prompt(String),
+    /// Autonomous learning — attend the next lesson in the specified course.
+    /// String is the course_id. If empty, picks the next available course.
+    AttendClass(String),
+    /// PhD research — advance the next research project phase.
+    /// String is the project_id. If empty, picks the active project.
+    ConductResearch(String),
+    /// Spaced repetition — review due cards from completed courses.
+    SpacedReview,
 }
 
 impl std::fmt::Display for JobTask {
@@ -55,6 +63,9 @@ impl std::fmt::Display for JobTask {
             Self::LogRotate => write!(f, "log_rotate"),
             Self::Custom(cmd) => write!(f, "custom: {}", cmd),
             Self::Prompt(prompt) => write!(f, "prompt: {}", &prompt[..prompt.len().min(60)]),
+            Self::AttendClass(id) => write!(f, "attend_class: {}", if id.is_empty() { "next" } else { id }),
+            Self::ConductResearch(id) => write!(f, "conduct_research: {}", if id.is_empty() { "active" } else { id }),
+            Self::SpacedReview => write!(f, "spaced_review"),
         }
     }
 }

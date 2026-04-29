@@ -23,9 +23,9 @@ cargo test --lib
 
 | Category | Count | Location |
 |----------|-------|----------|
-| Unit (inline) | 403 | `src/**/*.rs` — `#[cfg(test)] mod tests` blocks |
+| Unit (inline) | 598 | `src/**/*.rs` — `#[cfg(test)] mod tests` blocks |
 | E2E (integration) | 76 | `tests/e2e_tests.rs` |
-| **Total** | **479** | |
+| **Total** | **674** | |
 | **Failures** | **0** | |
 
 ## Unit Test Distribution
@@ -43,6 +43,13 @@ Tests are embedded in each module via `#[cfg(test)]` blocks:
 | `provider` (stream_parser, llamacpp, ollama, openai_compat) | 16 |
 | `scheduler` (job, store) | 13 |
 | `learning` (mod, buffers, sleep, teacher, observer_buffer) | 13 |
+| `learning::research` (project lifecycle, gate logic, JSON parsing) | 25 |
+| `learning::review` (Leitner cards, box promotion, persistence) | 17 |
+| `learning::graduation` (gates, promotion, persistence) | 11 |
+| `learning::mlx_bridge` (config scaling, data prep, EWC) | 10 |
+| `learning::curriculum` (courses, progress, completion) | 14 |
+| `learning::verification` (quarantine, verification results) | 26 |
+| `learning::student` (session, scene processing) | 16 |
 | `agents` | 12 |
 | `prompt` (hud, tools) | 11 |
 | `web::handlers` | 9 |
