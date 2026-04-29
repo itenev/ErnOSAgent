@@ -181,7 +181,8 @@ async fn handle_reply(
     true
 }
 
-/// Run observer audit on a reply. Returns true if approved (or bail-out), false if rejected.
+/// Run observer audit on a reply. Returns true if approved, false if rejected.
+/// No bailout — the model must produce an approved response.
 async fn run_observer_audit(
     state: &AppState,
     provider: &dyn crate::provider::Provider,
@@ -196,8 +197,8 @@ async fn run_observer_audit(
     use crate::inference::react_observer::{audit_reply, ObserverVerdict};
     match audit_reply(provider, &ctx.messages, reply, state.config.observer.enabled, user_query).await {
         Ok(ObserverVerdict::Approved) => {
+            ls.consecutive_rejections = 0;
             send_ws(sender, "audit_completed", &serde_json::json!({"approved": true})).await;
-            // Also run the full audit for conversation stack + training capture
             let tool_context = build_tool_context(&ctx.messages);
             if let Ok(output) = observer::audit_response(provider, &ctx.messages, reply, &tool_context, user_query).await {
                 crate::web::ws_stream::save_conversation_stack(state, session_id, &output.result);
@@ -206,24 +207,19 @@ async fn run_observer_audit(
         }
         Ok(ObserverVerdict::Rejected { reason, guidance }) => {
             ls.consecutive_rejections += 1;
-            tracing::info!(
-                reason = %reason, guidance = %guidance,
+            tracing::warn!(
+                reason = %reason,
+                guidance = %guidance,
                 consecutive = ls.consecutive_rejections,
-                "ReAct reply rejected — retrying"
+                "ReAct reply rejected — re-inferring with feedback"
             );
-            if ls.consecutive_rejections >= 2 {
-                tracing::warn!(rejections = ls.consecutive_rejections, "ReAct observer bailout — forcing response");
-                let bailout = observer::format_bailout_override(ls.consecutive_rejections);
-                ctx.messages.push(Message::text("system", &bailout));
-                true
-            } else {
-                ctx.messages.push(Message::text("assistant", reply));
-                let feedback = observer::format_rejection_feedback_from_reason(&reason, &guidance);
-                ctx.messages.push(Message::text("system", &feedback));
-                false
-            }
+            ctx.messages.push(Message::text("assistant", reply));
+            let feedback = observer::format_rejection_feedback_from_reason(&reason, &guidance);
+            ctx.messages.push(Message::text("system", &feedback));
+            false
         }
         Err(e) => {
+            // Infrastructure error — fail-open (observer itself is down)
             tracing::warn!(error = %e, "Observer failed — fail-open");
             true
         }

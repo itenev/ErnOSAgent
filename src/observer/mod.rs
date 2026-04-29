@@ -1,5 +1,5 @@
 // Ern-OS — Observer audit module
-//! 19-rule battle-tested audit system. Uses the same model via
+//! 20-rule battle-tested audit system. Uses the same model via
 //! chat_sync (thinking disabled) for fast verdicts.
 //! Ported from ErnOSAgent's production observer with full 7-section audit prompt.
 
@@ -310,18 +310,6 @@ pub fn format_rejection_feedback(result: &AuditResult) -> String {
     )
 }
 
-/// Format the bail-out critical override message.
-/// Used when the observer has blocked N consecutive responses to break infinite loops.
-pub fn format_bailout_override(rejections: usize) -> String {
-    format!(
-        "[CRITICAL — OBSERVER BLOCKED {} TIMES. The observer audit has blocked your \
-         response {} times and may be incorrect. You MUST respond to the user NOW. \
-         Explain what you did, what tools you used, and their results. \
-         Be honest about any issues. Do NOT retry the same approach.]",
-        rejections, rejections
-    )
-}
-
 /// Format rejection feedback from reason and guidance strings directly.
 /// Used by the ReAct observer path which receives these fields from `audit_reply`.
 pub fn format_rejection_feedback_from_reason(reason: &str, guidance: &str) -> String {
@@ -465,13 +453,6 @@ mod tests {
         assert!(feedback.contains("call the required tools NOW"));
     }
 
-    #[test]
-    fn test_format_bailout_override() {
-        let msg = format_bailout_override(2);
-        assert!(msg.contains("CRITICAL"));
-        assert!(msg.contains("BLOCKED 2 TIMES"));
-        assert!(msg.contains("respond to the user NOW"));
-    }
 
     #[test]
     fn test_trim_observer_message_strips_digests() {

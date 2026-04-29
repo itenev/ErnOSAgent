@@ -11,11 +11,9 @@ use crate::web::training_capture;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::SinkExt;
 
-/// Observer-gated audit loop: audit response, retry silently if rejected.
-/// Returns the approved text (or last attempt after max retries / bailout).
-///
-/// Uses the new 19-rule observer with structured rejection feedback and
-/// bailout override to prevent infinite rejection loops.
+/// Observer-gated audit loop: audit response, retry with feedback if rejected.
+/// Returns the approved text. No cap — the model MUST produce an approved response.
+/// If this loops, the observer feedback isn't being followed, which is a deeper bug.
 pub async fn audit_and_retry(
     state: &AppState,
     provider: &dyn crate::provider::Provider,
@@ -26,14 +24,15 @@ pub async fn audit_and_retry(
     initial_text: &str,
     session_id: &str,
 ) -> String {
-    let max_retries = 2;
     let mut current_text = initial_text.to_string();
 
     if !state.config.observer.enabled || current_text.is_empty() {
         return current_text;
     }
 
-    for attempt in 0..=max_retries {
+    let mut retries: usize = 0;
+
+    loop {
         send_ws(sender, "audit_running", &serde_json::json!({})).await;
         let tool_ctx = build_l1_tool_context(messages);
 
@@ -47,23 +46,24 @@ pub async fn audit_and_retry(
                     state, user_query, &current_text,
                     output.result.confidence, &output.result.positive_flags,
                 );
-                // Save conversation stack from observer classification
                 save_conversation_stack(state, session_id, &output.result);
                 return current_text;
             }
             Ok(output) => {
+                retries += 1;
                 let rejected_text = current_text.clone();
                 let reason = output.result.what_went_wrong.clone();
 
-                tracing::info!(attempt, category = %output.result.failure_category, reason = %reason, "Response rejected — retrying");
+                tracing::warn!(
+                    retries,
+                    category = %output.result.failure_category,
+                    what_went_wrong = %reason,
+                    how_to_fix = %output.result.how_to_fix,
+                    "Observer BLOCKED — re-inferring with feedback"
+                );
                 send_ws(sender, "audit_completed", &serde_json::json!({
                     "approved": false, "category": &output.result.failure_category, "reason": &reason,
                 })).await;
-
-                if attempt >= max_retries {
-                    current_text = handle_bailout(provider, sender, messages, tools, &rejected_text, attempt + 1).await;
-                    break;
-                }
 
                 current_text = retry_with_feedback(
                     state, provider, sender, messages, tools,
@@ -71,37 +71,12 @@ pub async fn audit_and_retry(
                 ).await;
             }
             Err(e) => {
+                // Infrastructure error — fail-open (observer itself is down)
                 tracing::warn!(error = %e, "Observer failed — fail-open");
                 return current_text;
             }
         }
     }
-
-    current_text
-}
-
-/// Bailout after max rejections — force the response through with an override prompt.
-async fn handle_bailout(
-    provider: &dyn crate::provider::Provider,
-    _sender: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
-    messages: &mut Vec<Message>,
-    tools: &serde_json::Value,
-    rejected_text: &str,
-    rejection_count: usize,
-) -> String {
-    tracing::warn!(rejections = rejection_count, "Observer bailout — forcing response through");
-    let bailout = observer::format_bailout_override(rejection_count);
-    messages.push(Message::text("assistant", rejected_text));
-    messages.push(Message::text("system", &bailout));
-
-    if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
-        use crate::inference::stream_consumer::{self as sc, NullSink};
-        let mut sink = NullSink;
-        if let sc::ConsumeResult::Reply { text, .. } = sc::consume_stream(rx, &mut sink).await {
-            return text;
-        }
-    }
-    rejected_text.to_string()
 }
 
 /// Retry inference with structured rejection feedback and execute any tool calls.

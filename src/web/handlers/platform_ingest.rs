@@ -34,9 +34,6 @@ impl AuditSummary {
     fn error(retries: usize) -> Self {
         Self { verdict: "Error".into(), confidence: 0.0, retries, active_topic: String::new() }
     }
-    fn exhausted(retries: usize) -> Self {
-        Self { verdict: "Exhausted".into(), confidence: 0.0, retries, active_topic: String::new() }
-    }
 }
 
 /// POST /api/chat/platform — ingest a message from a platform adapter.
@@ -318,9 +315,11 @@ pub async fn audit_and_capture(
     let tool_context = super::platform_exec::build_tool_context(messages);
     let mut current_text = initial_text.to_string();
     let mut retries: usize = 0;
-    let max_retries = 2;
 
-    for attempt in 0..=max_retries {
+    // No cap — the model MUST produce an approved response.
+    // If this loops, it means the observer feedback isn't being followed,
+    // which is a deeper bug to fix — not mask with a bailout.
+    loop {
         match crate::observer::audit_response(
             provider, messages, &current_text, &tool_context, user_query,
         ).await {
@@ -328,28 +327,27 @@ pub async fn audit_and_capture(
                 return handle_approved(state, user_query, &current_text, session_id, &output.result, retries);
             }
             Ok(output) => {
-                retries = attempt + 1;
+                retries += 1;
                 let rejected = current_text.clone();
-                tracing::info!(attempt, category = %output.result.failure_category, "Platform response rejected");
-
-                if attempt >= max_retries {
-                    return handle_audit_bailout(
-                        provider, messages, tools, &rejected, retries, &output.result.active_topic,
-                        state.model_spec.context_length,
-                    ).await;
-                }
+                tracing::warn!(
+                    retries,
+                    category = %output.result.failure_category,
+                    what_went_wrong = %output.result.what_went_wrong,
+                    how_to_fix = %output.result.how_to_fix,
+                    "Observer BLOCKED — re-inferring with feedback"
+                );
                 current_text = retry_after_rejection(
                     state, provider, messages, tools, user_query, &rejected, &output.result,
                 ).await;
             }
             Err(e) => {
+                // Infrastructure error (observer itself is down) — fail-open.
+                // This is NOT a quality issue — the response was never evaluated.
                 tracing::warn!(error = %e, "Platform observer failed — fail-open");
                 return (current_text, AuditSummary::error(retries));
             }
         }
     }
-
-    (current_text, AuditSummary::exhausted(retries))
 }
 
 /// Handle approved audit — capture training signal and save conversation stack.
@@ -373,35 +371,6 @@ fn handle_approved(
     })
 }
 
-/// Handle observer bailout: inject override prompt and re-infer.
-async fn handle_audit_bailout(
-    provider: &dyn crate::provider::Provider,
-    messages: &mut Vec<crate::provider::Message>,
-    tools: &serde_json::Value,
-    rejected_text: &str,
-    retries: usize,
-    active_topic: &str,
-    context_length: usize,
-) -> (String, AuditSummary) {
-    tracing::warn!(rejections = retries, "Platform observer bailout");
-    let bailout = crate::observer::format_bailout_override(retries);
-    messages.push(crate::provider::Message::text("assistant", rejected_text));
-    messages.push(crate::provider::Message::text("system", &bailout));
-    super::platform_exec::enforce_context_budget(messages, context_length);
-
-    let mut final_text = rejected_text.to_string();
-    if let Ok(rx) = provider.chat(messages, Some(tools), true).await {
-        use crate::inference::stream_consumer::{self as sc, NullSink};
-        let mut sink = NullSink;
-        if let sc::ConsumeResult::Reply { text, .. } = sc::consume_stream(rx, &mut sink).await {
-            final_text = text;
-        }
-    }
-
-    (final_text, AuditSummary {
-        verdict: "Bailout".to_string(), confidence: 0.0, retries, active_topic: active_topic.to_string(),
-    })
-}
 
 /// Retry inference after observer rejection.
 async fn retry_after_rejection(
