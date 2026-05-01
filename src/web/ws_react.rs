@@ -61,7 +61,11 @@ pub async fn run_react_loop(
         tracing::info!(iteration = ls.total_iterations, remaining = ls.remaining_turns, "ReAct iteration");
         state.cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
 
-        match react_loop::run_iteration_cancellable(provider, &ctx, true, Some(&state.cancel_flag)).await {
+        // After budget exhaustion, the assessment prompt is a directive (reply_request
+        // or extend_turns) — not a reasoning task. Thinking is unnecessary and can cause
+        // models to emit stop with zero content. Model-neutral per §7.1.
+        let thinking = !ls.budget_exhausted_prompted;
+        match react_loop::run_iteration_cancellable(provider, &ctx, thinking, Some(&state.cancel_flag)).await {
             Ok(IterationResult::Reply(reply, thinking)) => {
                 if handle_reply(state, provider, &mut ctx, &mut ls, &reply, &thinking, user_query, session_id, sender).await {
                     return;
@@ -306,6 +310,9 @@ async fn handle_single_tool(
     emit_artifact_card(&tc.name, &result, sender).await;
     track_spiral(ls, &tc.name, &result);
     ctx.add_tool_result(tc, result);
+    crate::web::handlers::platform_context::enforce_context_budget(
+        &mut ctx.messages, state.model_spec.context_length,
+    );
     emit_auto_verify_hint(ctx, &tc.name);
     ls.remaining_turns = ls.remaining_turns.saturating_sub(1);
     ls.total_iterations += 1;
@@ -357,6 +364,9 @@ async fn handle_parallel_tools(
     ls.consecutive_fails = 0;
     let pairs: Vec<_> = tcs.iter().zip(results.into_iter()).collect();
     ctx.add_tool_results(pairs);
+    crate::web::handlers::platform_context::enforce_context_budget(
+        &mut ctx.messages, state.model_spec.context_length,
+    );
     ls.remaining_turns = ls.remaining_turns.saturating_sub(1);
     ls.total_iterations += 1;
 }

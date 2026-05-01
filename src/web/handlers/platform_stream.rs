@@ -171,24 +171,39 @@ async fn run_streaming_pipeline(
                 let _ = emit(&tx, "thinking_complete", &serde_json::json!({"length": t.len()})).await;
             }
             if text.trim().is_empty() {
-                // Empty reply = consolidation failed to prevent context overflow.
-                // Report as a clean error with full diagnostics (§2.4, §2.6).
                 let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-                let estimated_tokens = total_chars / 4;
-                tracing::error!(
-                    total_chars,
-                    estimated_tokens,
-                    msg_count = messages.len(),
-                    context_length = state.model_spec.context_length,
-                    "Model returned empty response — consolidation failed to prevent overflow"
-                );
-                let _ = emit(&tx, "error", &serde_json::json!({
-                    "error": format!(
-                        "Context overflow: {} estimated tokens vs {} token limit ({} messages). \
-                         This is a consolidation bug — please report.",
-                        estimated_tokens, state.model_spec.context_length, messages.len()
-                    ),
-                })).await;
+                let estimated_tokens = total_chars / 3;
+                let has_thinking = thinking.as_ref().map_or(false, |t| !t.is_empty());
+                if has_thinking {
+                    // Model exhausted generation budget on reasoning — not overflow.
+                    tracing::warn!(
+                        total_chars, estimated_tokens, msg_count = messages.len(),
+                        context_length = state.model_spec.context_length,
+                        "Model produced thinking but empty content — generation budget exhausted"
+                    );
+                    let _ = emit(&tx, "error", &serde_json::json!({
+                        "error": format!(
+                            "Model spent all generation tokens on reasoning ({} chars thinking). \
+                             Try a shorter session or simpler prompt.",
+                            thinking.as_ref().map_or(0, |t| t.len())
+                        ),
+                    })).await;
+                } else {
+                    // Genuine empty response — likely context overflow.
+                    tracing::error!(
+                        total_chars, estimated_tokens,
+                        msg_count = messages.len(),
+                        context_length = state.model_spec.context_length,
+                        "Model returned completely empty response — possible context overflow"
+                    );
+                    let _ = emit(&tx, "error", &serde_json::json!({
+                        "error": format!(
+                            "Empty response: {} est. tokens vs {} limit ({} messages). \
+                             Context may be too large — consolidation should have triggered.",
+                            estimated_tokens, state.model_spec.context_length, messages.len()
+                        ),
+                    })).await;
+                }
             } else {
                 emit_reply(&state, provider, &mut messages, &tools, &msg, &session_id, text, &tx).await;
             }

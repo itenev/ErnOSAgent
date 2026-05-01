@@ -96,7 +96,7 @@ pub async fn update_version() -> Json<serde_json::Value> {
     tracing::info!(pull = %pull.trim(), "Git pull complete");
 
     // 3. Recompile
-    match crate::tools::compiler::run_recompile().await {
+    match crate::tools::compiler::run_recompile("", "web").await {
         Ok(msg) => {
             Json(json!({
                 "success": true,
@@ -149,7 +149,7 @@ pub async fn rollback_version(
     }
 
     // 4. Recompile
-    match crate::tools::compiler::run_recompile().await {
+    match crate::tools::compiler::run_recompile("", "web").await {
         Ok(msg) => {
             Json(json!({
                 "success": true,

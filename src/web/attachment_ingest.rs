@@ -11,11 +11,11 @@
 use anyhow::Result;
 
 /// Compute the inline character budget from the model's context length.
-/// Allocates 25% of the context window for attachment text (~1 char per token).
-/// This is derived from the model's reported context_length, not hardcoded.
+/// Allocates 25% of the context window for attachment text.
+/// Uses conservative token estimation (~3 chars/token for BPE tokenizers).
 pub fn inline_char_budget(context_length: usize) -> usize {
-    // 25% of context * ~4 chars per token
-    (context_length / 4) * 4
+    // 25% of context window, converted to chars at ~3 chars per token
+    (context_length / 4) * 3
 }
 
 /// A processed attachment ready for inference injection.

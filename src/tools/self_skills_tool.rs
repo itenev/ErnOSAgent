@@ -50,9 +50,17 @@ fn create_skill(args: &serde_json::Value, procedures: &mut ProcedureStore) -> Re
 }
 
 /// Resolve a skill identifier — tries `id` first, then falls back to `name` lookup.
+/// If `id` is provided but doesn't match any procedure, returns None (not a silent
+/// fallback to name — the caller produces a clear error per §2.6).
 fn resolve_id(args: &serde_json::Value, procedures: &ProcedureStore) -> Option<String> {
     if let Some(id) = args["id"].as_str().filter(|s| !s.is_empty()) {
-        return Some(id.to_string());
+        // Validate that the id actually matches a procedure
+        if procedures.all().iter().any(|p| p.id == id || p.id.starts_with(id)) {
+            return Some(id.to_string());
+        }
+        // id field is set but doesn't match — return None so caller can produce
+        // a clear error with available procedures (§2.6), not a silent fallback (§2.4)
+        return None;
     }
     if let Some(name) = args["name"].as_str().filter(|s| !s.is_empty()) {
         return procedures.find_by_name(name).map(|p| p.id.clone());
@@ -63,7 +71,17 @@ fn resolve_id(args: &serde_json::Value, procedures: &ProcedureStore) -> Option<S
 fn refine_skill(args: &serde_json::Value, procedures: &mut ProcedureStore) -> Result<String> {
     let id = match resolve_id(args, procedures) {
         Some(id) => id,
-        None => return Ok("Error: 'id' or 'name' required for refine. Use 'list' to see skills.".to_string()),
+        None => {
+            let available = format_available_procedures(procedures);
+            let attempted = args["id"].as_str()
+                .or(args["name"].as_str())
+                .unwrap_or("(none)");
+            return Ok(format!(
+                "Error: No procedure matching '{}'. \
+                 Use 'list' to see available skills.\n{}",
+                attempted, available
+            ));
+        }
     };
     let steps = parse_steps(args);
     procedures.refine(&id, steps)?;
@@ -73,10 +91,32 @@ fn refine_skill(args: &serde_json::Value, procedures: &mut ProcedureStore) -> Re
 fn delete_skill(args: &serde_json::Value, procedures: &mut ProcedureStore) -> Result<String> {
     let id = match resolve_id(args, procedures) {
         Some(id) => id,
-        None => return Ok("Error: 'id' or 'name' required for delete. Use 'list' to see skills.".to_string()),
+        None => {
+            let available = format_available_procedures(procedures);
+            let attempted = args["id"].as_str()
+                .or(args["name"].as_str())
+                .unwrap_or("(none)");
+            return Ok(format!(
+                "Error: No procedure matching '{}'. \
+                 Use 'list' to see available skills.\n{}",
+                attempted, available
+            ));
+        }
     };
     procedures.remove(&id)?;
     Ok(format!("Skill '{}' deleted", id))
+}
+
+/// Format available procedures for clear error messages (§2.6).
+fn format_available_procedures(procedures: &ProcedureStore) -> String {
+    let all = procedures.all();
+    if all.is_empty() {
+        return "Available procedures: (none)".to_string();
+    }
+    let entries: Vec<String> = all.iter()
+        .map(|p| format!("  [{}] {}", &p.id[..8.min(p.id.len())], p.name))
+        .collect();
+    format!("Available procedures:\n{}", entries.join("\n"))
 }
 
 fn parse_steps(args: &serde_json::Value) -> Vec<ProcedureStep> {
@@ -114,5 +154,56 @@ mod tests {
         let list_args = serde_json::json!({"action": "list"});
         let result = execute(&list_args, &mut store).await.unwrap();
         assert!(result.contains("Deploy"));
+    }
+
+    #[tokio::test]
+    async fn test_refine_with_name_in_id_field_fails_with_hint() {
+        let mut store = ProcedureStore::new();
+        // Create a skill
+        let args = serde_json::json!({
+            "action": "create", "name": "Deploy",
+            "steps": [{"tool": "shell", "instruction": "build"}]
+        });
+        execute(&args, &mut store).await.unwrap();
+        // Try to refine using the name in the id field (model error)
+        let refine_args = serde_json::json!({
+            "action": "refine", "id": "Deploy",
+            "steps": [{"tool": "shell", "instruction": "build --release"}]
+        });
+        let result = execute(&refine_args, &mut store).await.unwrap();
+        assert!(result.contains("Error"), "Should fail: {}", result);
+        assert!(result.contains("Deploy"), "Should mention the attempted name");
+        assert!(result.contains("Available procedures"), "Should list available procedures");
+    }
+
+    #[tokio::test]
+    async fn test_refine_by_name_succeeds() {
+        let mut store = ProcedureStore::new();
+        let args = serde_json::json!({
+            "action": "create", "name": "Deploy",
+            "steps": [{"tool": "shell", "instruction": "build"}]
+        });
+        execute(&args, &mut store).await.unwrap();
+        // Refine using the name field (correct usage)
+        let refine_args = serde_json::json!({
+            "action": "refine", "name": "Deploy",
+            "steps": [{"tool": "shell", "instruction": "build --release"}]
+        });
+        let result = execute(&refine_args, &mut store).await.unwrap();
+        assert!(result.contains("refined"), "Should succeed: {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_delete_with_invalid_id_fails_with_hint() {
+        let mut store = ProcedureStore::new();
+        let args = serde_json::json!({
+            "action": "create", "name": "Deploy",
+            "steps": [{"tool": "shell", "instruction": "build"}]
+        });
+        execute(&args, &mut store).await.unwrap();
+        let delete_args = serde_json::json!({"action": "delete", "id": "nonexistent"});
+        let result = execute(&delete_args, &mut store).await.unwrap();
+        assert!(result.contains("Error"), "Should fail: {}", result);
+        assert!(result.contains("Available procedures"), "Should list available");
     }
 }

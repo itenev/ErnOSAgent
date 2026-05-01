@@ -151,6 +151,15 @@ pub trait PlatformAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Send an image file as an attachment to a channel, with optional caption text.
+    async fn send_image_file(
+        &self, channel_id: &str, message_id: &str, image_bytes: Vec<u8>,
+        filename: &str, caption: &str,
+    ) -> Result<()> {
+        let _ = (channel_id, message_id, image_bytes, filename, caption);
+        Ok(())
+    }
+
     /// Take the receiver end of the incoming message channel.
     fn take_message_receiver(&mut self) -> Option<mpsc::Receiver<PlatformMessage>>;
 

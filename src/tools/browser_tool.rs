@@ -186,11 +186,45 @@ pub async fn screenshot_url(
 // ─── Interactive Browser API ───
 
 /// Dispatch a browser action by name.
+/// All CDP calls are wrapped in `tokio::time::timeout` using `BrowserConfig.timeout_ms`
+/// to prevent deadlocks on unresponsive pages or non-interactive elements (§2.4).
 pub async fn execute_action(
     state: &Arc<RwLock<BrowserState>>,
     args: &serde_json::Value,
 ) -> Result<String> {
-    let action = args["action"].as_str().unwrap_or("open");
+    // §2.4: Reject missing action — never silently default to "open"
+    let action = match args["action"].as_str() {
+        Some(a) => a,
+        None => anyhow::bail!(
+            "Missing 'action' field. Available actions: open, click, type, navigate, \
+             wait, extract, screenshot, evaluate, close, list"
+        ),
+    };
+
+    let timeout_ms = {
+        let s = state.read().await;
+        s.config.timeout_ms
+    };
+
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        dispatch_action(state, action, args),
+    ).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "Browser operation '{}' timed out after {}ms. \
+             The page may be unresponsive or the target element non-interactive.",
+            action, timeout_ms
+        ),
+    }
+}
+
+/// Inner dispatch — called within the timeout wrapper.
+async fn dispatch_action(
+    state: &Arc<RwLock<BrowserState>>,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<String> {
     match action {
         "open" => action_open(state, args).await,
         "click" => action_click(state, args).await,
@@ -480,5 +514,35 @@ mod tests {
         assert!(state.pages.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_missing_action_rejected() {
+        let state = Arc::new(RwLock::new(BrowserState::new()));
+        // Malformed args with no "action" field
+        let args = serde_json::json!({"introspect{action": "snapshot"});
+        let result = execute_action(&state, &args).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Missing 'action' field"), "Error should mention missing action: {}", err);
+        assert!(err.contains("open"), "Error should list available actions: {}", err);
+    }
 
+    #[tokio::test]
+    async fn test_unknown_action_rejected() {
+        let state = Arc::new(RwLock::new(BrowserState::new()));
+        let args = serde_json::json!({"action": "destroy"});
+        let result = execute_action(&state, &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown browser action"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_fires_on_hung_future() {
+        // Simulate a hung CDP call — timeout should fire
+        let timeout_ms = 100; // 100ms for test speed
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            tokio::time::sleep(std::time::Duration::from_secs(60)), // "hangs" for 60s
+        ).await;
+        assert!(result.is_err(), "Timeout should fire on hung future");
+    }
 }

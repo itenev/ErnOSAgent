@@ -174,6 +174,15 @@ pub async fn audit_response(
         "Observer audit complete"
     );
 
+    // Low-confidence ALLOWED is suspicious — the observer isn't sure but passed it anyway.
+    if result.verdict.is_allowed() && result.confidence < 0.6 {
+        tracing::warn!(
+            confidence = result.confidence,
+            category = %result.failure_category,
+            "Observer ALLOWED with low confidence — response quality questionable"
+        );
+    }
+
     Ok(AuditOutput {
         result,
         raw_response: response,

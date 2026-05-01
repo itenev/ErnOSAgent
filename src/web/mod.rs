@@ -7,6 +7,7 @@ pub mod ws_stream;
 pub mod ws_react;
 pub mod ws_react_helpers;
 pub mod ws_context;
+pub mod hud_data;
 pub mod ws_plans;
 pub mod state;
 pub mod tool_dispatch;

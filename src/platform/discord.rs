@@ -265,6 +265,38 @@ impl PlatformAdapter for DiscordAdapter {
         Ok(())
     }
 
+    async fn send_image_file(
+        &self, channel_id: &str, message_id: &str, image_bytes: Vec<u8>,
+        filename: &str, caption: &str,
+    ) -> Result<()> {
+        let http = self.http.as_ref().context("Discord not connected")?;
+        let channel = channel_id.parse::<u64>().context("Invalid channel ID")?;
+        let ch = serenity::all::ChannelId::new(channel);
+
+        let attachment = serenity::builder::CreateAttachment::bytes(image_bytes, filename);
+        let content = if caption.is_empty() { "🎨".to_string() } else { caption.to_string() };
+        let mut msg_builder = serenity::builder::CreateMessage::new()
+            .content(&content)
+            .add_file(attachment);
+
+        // Reply to the original message if we have a valid ID
+        if let Ok(msg_id) = message_id.parse::<u64>() {
+            msg_builder = msg_builder.reference_message(serenity::all::MessageReference::from((
+                ch,
+                serenity::all::MessageId::new(msg_id),
+            )));
+        }
+
+        match ch.send_message(http.as_ref(), msg_builder).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Discord image reply failed, sending without reference");
+                let _ = ch.say(http.as_ref(), &format!("{} *(image upload failed)*", content)).await;
+                Ok(())
+            }
+        }
+    }
+
     fn take_message_receiver(&mut self) -> Option<mpsc::Receiver<PlatformMessage>> {
         self.rx.take()
     }

@@ -241,21 +241,42 @@ pub(crate) async fn deliver_response(
         ).await;
     } else {
         let scrub = crate::web::output_sanitizer::scrub_tool_leaks(&hub_resp.response);
-        let final_text = if scrub.text.is_empty() && scrub.had_leak {
-            // Sanitizer stripped everything — deliver original output, log for DPO
+        let mut final_text = if scrub.text.is_empty() && scrub.had_leak {
             tracing::warn!(platform = %platform, leak = ?scrub.leak_description, "Sanitizer stripped entire response — delivering original");
             hub_resp.response.clone()
         } else {
             scrub.text
         };
 
-        let buttons = build_buttons_for_response(&hub_resp);
-        let reg = registry.read().await;
-        let result = reg.reply_with_components(
-            platform, channel_id, message_id, &final_text, &buttons,
-        ).await;
-        if let Err(e) = result {
-            tracing::error!(platform = %platform, error = %e, "Failed to deliver response");
+        // Extract and upload images as Discord attachments
+        let images = extract_local_images(&final_text);
+        for img in &images {
+            if let Ok(bytes) = tokio::fs::read(&img.file_path).await {
+                let reg = registry.read().await;
+                let _ = reg.send_image_file(
+                    platform, channel_id, message_id,
+                    bytes, &img.filename, &img.alt_text,
+                ).await;
+            } else {
+                tracing::warn!(path = %img.file_path, "Failed to read image for Discord upload");
+            }
+        }
+        // Strip image markdown from the text (Discord renders them as attachments)
+        for img in &images {
+            final_text = final_text.replace(&img.full_match, "");
+        }
+        let final_text = final_text.trim().to_string();
+
+        // If text is empty after stripping images, skip text delivery
+        if !final_text.is_empty() {
+            let buttons = build_buttons_for_response(&hub_resp);
+            let reg = registry.read().await;
+            let result = reg.reply_with_components(
+                platform, channel_id, message_id, &final_text, &buttons,
+            ).await;
+            if let Err(e) = result {
+                tracing::error!(platform = %platform, error = %e, "Failed to deliver response");
+            }
         }
     }
 
@@ -265,6 +286,30 @@ pub(crate) async fn deliver_response(
         let _ = reg.send_to_thread(platform, tid, "✅ *Done — response delivered.*").await;
         let _ = reg.archive_thread(platform, tid).await;
     }
+}
+
+/// A local image reference extracted from markdown.
+struct LocalImage {
+    full_match: String,
+    alt_text: String,
+    filename: String,
+    file_path: String,
+}
+
+/// Extract `![alt](/api/images/filename.png)` patterns from response text.
+/// Returns the image metadata needed to read the file and upload it.
+fn extract_local_images(text: &str) -> Vec<LocalImage> {
+    let mut images = Vec::new();
+    // Match ![any alt text](/api/images/filename.ext)
+    let re = regex::Regex::new(r"!\[([^\]]*)\]\(/api/images/([^)]+)\)").unwrap();
+    for cap in re.captures_iter(text) {
+        let full_match = cap[0].to_string();
+        let alt_text = cap[1].to_string();
+        let filename = cap[2].to_string();
+        let file_path = format!("data/images/{}", filename);
+        images.push(LocalImage { full_match, alt_text, filename, file_path });
+    }
+    images
 }
 
 /// Build the appropriate button set for a hub response.
@@ -470,5 +515,47 @@ mod tests {
         let resp = parse_hub_response(body);
         assert!(resp.has_plan);
         assert_eq!(resp.plan_markdown.unwrap(), "## Steps\n- Do thing 1\n- Do thing 2");
+    }
+
+    #[test]
+    fn test_extract_local_images_single() {
+        let text = "Here is your image: ![a landscape](/api/images/abc123.png)";
+        let images = extract_local_images(text);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].alt_text, "a landscape");
+        assert_eq!(images[0].filename, "abc123.png");
+        assert_eq!(images[0].file_path, "data/images/abc123.png");
+        assert_eq!(images[0].full_match, "![a landscape](/api/images/abc123.png)");
+    }
+
+    #[test]
+    fn test_extract_local_images_multiple() {
+        let text = "![img1](/api/images/a.png) and ![img2](/api/images/b.jpg)";
+        let images = extract_local_images(text);
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].filename, "a.png");
+        assert_eq!(images[1].filename, "b.jpg");
+    }
+
+    #[test]
+    fn test_extract_local_images_none() {
+        let text = "No images here, just text.";
+        let images = extract_local_images(text);
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn test_extract_local_images_external_url() {
+        let text = "![ext](https://example.com/img.png)";
+        let images = extract_local_images(text);
+        assert!(images.is_empty(), "Should not match external URLs");
+    }
+
+    #[test]
+    fn test_extract_strips_from_text() {
+        let text = "Look: ![photo](/api/images/x.png) nice!";
+        let images = extract_local_images(text);
+        let stripped = text.replace(&images[0].full_match, "").trim().to_string();
+        assert_eq!(stripped, "Look:  nice!");
     }
 }

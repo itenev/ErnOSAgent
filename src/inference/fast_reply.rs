@@ -30,8 +30,6 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[tokio::test]
     async fn test_run_returns_receiver() {
         // Compile-time check that run() returns the correct type

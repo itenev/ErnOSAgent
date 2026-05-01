@@ -3,6 +3,7 @@
 use crate::memory::consolidation::ConsolidationEngine;
 use crate::provider::Message;
 use crate::web::state::AppState;
+use super::hud_data;
 
 /// Assembled chat context ready for inference.
 pub struct ChatContext {
@@ -37,7 +38,7 @@ pub async fn build_chat_context(
     // Embed user query for RAG document retrieval (best-effort)
     let query_embedding = state.provider.embed(content).await.ok();
 
-    let (memory_context, memory_counts) = {
+    let (memory_context, memory_counts, hud_data) = {
         let memory = state.memory.read().await;
         let ctx = memory.recall_context(content, 2000, query_embedding.as_deref());
         let counts = (
@@ -47,7 +48,12 @@ pub async fn build_chat_context(
             memory.scratchpad.count(),
             memory.documents.count(),
         );
-        (ctx, counts)
+        let lessons = hud_data::match_relevant_lessons(&memory.lessons, content, &session_history);
+        let procedures = hud_data::match_relevant_procedures(&memory.procedures, content, &session_history);
+        let scratchpad = hud_data::format_scratchpad_content(&memory.scratchpad);
+        let kg = hud_data::format_kg_snapshot(&memory.synaptic);
+        let narrative = hud_data::format_timeline_narrative(&memory.timeline);
+        (ctx, counts, (lessons, procedures, scratchpad, kg, narrative))
     };
 
     let golden_count = state.golden_buffer.read().await.count();
@@ -69,6 +75,29 @@ pub async fn build_chat_context(
     };
     let quarantine_count = state.quarantine.read().await.count();
 
+    // ── Phase 3: Pre-HUD context usage estimate ──
+    let history_chars: usize = session_history.iter().map(|m| m.text_content().len()).sum();
+    let est_tokens = (history_chars + content.len() + tools_chars) / 3; // Conservative BPE estimate
+    let context_usage_pct = est_tokens as f32 / state.model_spec.context_length.max(1) as f32;
+
+    // ── Phase 5: System log tail (WARN/ERROR only) ──
+    let system_log_tail = hud_data::read_log_tail(&state.config.general.data_dir);
+
+    // ── Phase 7: Reasoning traces from session history ──
+    let reasoning_traces = hud_data::extract_recent_reasoning(&session_history);
+
+    // ── Phase 8: Active steering vectors ──
+    let active_steering = hud_data::format_active_steering(&state.config.general.data_dir);
+
+    // ── Phase 9: Platform connection status ──
+    let platform_status = state.platforms.read().await.status_summary();
+
+    // ── Phase 11: User preferences ──
+    let user_preferences = hud_data::load_user_preferences(&state.config.general.data_dir, session_id);
+
+    // ── Phase 12: Scheduler status ──
+    let scheduler_status = hud_data::format_scheduler_status(&*state.scheduler.read().await);
+
     let hud = crate::prompt::hud::build_hud(&crate::prompt::hud::HudContext {
         model_name: state.model_spec.name.clone(),
         provider: state.config.general.active_provider.clone(),
@@ -89,6 +118,18 @@ pub async fn build_chat_context(
         quarantine_count,
         observer_enabled: state.config.observer.enabled,
         conversation_stack,
+        relevant_lessons: hud_data.0,
+        relevant_procedures: hud_data.1,
+        context_usage_pct,
+        scratchpad_content: hud_data.2,
+        system_log_tail,
+        kg_snapshot: hud_data.3,
+        reasoning_traces,
+        active_steering,
+        platform_status,
+        timeline_narrative: hud_data.4,
+        user_preferences,
+        scheduler_status,
     });
 
     let system_prompt = crate::prompt::assemble(&core_prompt, &identity_prompt, &memory_context, &hud);
@@ -171,7 +212,7 @@ async fn consolidate_if_needed(
     let context_length = state.model_spec.context_length;
     let history_chars: usize = session_history.iter().map(|m| m.text_content().len()).sum();
     let total_chars = history_chars + system_prompt.len() + content.len() + tools_chars;
-    let estimated_tokens = total_chars / 4;
+    let estimated_tokens = total_chars / 3; // Conservative BPE estimate (~3.2 chars/token)
     let usage_pct = estimated_tokens as f32 / context_length as f32;
 
     tracing::debug!(

@@ -2,10 +2,14 @@
 
 use axum::extract::Path;
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 
 pub async fn index() -> impl IntoResponse {
-    Html(include_str!("../static/index.html"))
+    ([
+        ("content-type", "text/html; charset=utf-8"),
+        ("cache-control", "no-cache, no-store, must-revalidate"),
+        ("pragma", "no-cache"),
+    ], include_str!("../static/index.html"))
 }
 
 pub async fn css() -> impl IntoResponse {

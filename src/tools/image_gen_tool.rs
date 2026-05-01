@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 
 /// Generate an image via the local Flux server.
-pub async fn execute(args: &serde_json::Value) -> Result<String> {
+pub async fn execute(args: &serde_json::Value, flux_port: u16) -> Result<String> {
     let prompt = args["prompt"].as_str().unwrap_or("");
     let width = args["width"].as_u64().unwrap_or(1024) as u32;
     let height = args["height"].as_u64().unwrap_or(1024) as u32;
@@ -15,9 +15,9 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
         anyhow::bail!("Image prompt cannot be empty");
     }
 
-    tracing::info!(prompt = %prompt, width, height, steps, "Generating image via Flux");
+    tracing::info!(prompt = %prompt, width, height, steps, flux_port, "Generating image via Flux");
 
-    let b64 = call_flux_server(prompt, width, height, steps, guidance).await?;
+    let b64 = call_flux_server(prompt, width, height, steps, guidance, flux_port).await?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let filename = format!("{}.png", id);
@@ -29,8 +29,7 @@ pub async fn execute(args: &serde_json::Value) -> Result<String> {
 }
 
 /// Send generation request to the Flux server and return base64 image.
-async fn call_flux_server(prompt: &str, width: u32, height: u32, steps: u32, guidance: f64) -> Result<String> {
-    let port = std::env::var("FLUX_PORT").unwrap_or_else(|_| "8890".to_string());
+async fn call_flux_server(prompt: &str, width: u32, height: u32, steps: u32, guidance: f64, port: u16) -> Result<String> {
     let url = format!("http://127.0.0.1:{}/generate", port);
 
     let client = reqwest::Client::new();
@@ -110,8 +109,7 @@ fn save_base64_image(b64: &str, filename: &str) -> Result<()> {
 }
 
 /// Check if the Flux server is reachable.
-pub async fn health_check() -> bool {
-    let port = std::env::var("FLUX_PORT").unwrap_or_else(|_| "8890".to_string());
+pub async fn health_check(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
     match reqwest::get(&url).await {
         Ok(resp) => resp.status().is_success(),
@@ -141,13 +139,13 @@ mod tests {
     #[tokio::test]
     async fn test_empty_prompt_rejected() {
         let args = serde_json::json!({"prompt": ""});
-        assert!(execute(&args).await.is_err());
+        assert!(execute(&args, 8890).await.is_err());
     }
 
     #[tokio::test]
     async fn test_health_check_returns_bool() {
-        // health_check returns true if server is running, false otherwise.
-        // Either outcome is valid — we only verify it doesn't panic.
-        let _result: bool = health_check().await;
+        // Use a port guaranteed to have nothing — returns false fast.
+        let result = health_check(19999).await;
+        assert!(!result);
     }
 }

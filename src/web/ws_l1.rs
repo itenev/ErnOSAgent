@@ -113,8 +113,14 @@ pub async fn run_l1_tool_chain(
         } else {
             messages.push(Message::tool_result_multipart(&current_tc.id, &result.output, result.images));
         }
+        crate::web::handlers::platform_context::enforce_context_budget(
+            messages, state.model_spec.context_length,
+        );
 
-        let rx_next = match provider.chat(messages, Some(tools), true).await {
+        // thinking=false: the model already reasoned during initial inference.
+        // Re-enabling thinking for tool result processing causes Gemma 4 to emit
+        // stop with no content (same bug fixed in platform_reinfer.rs, commit 1a1e3f3).
+        let rx_next = match provider.chat(messages, Some(tools), false).await {
             Ok(rx) => rx,
             Err(e) => { tracing::error!(error = %e, "L1 re-inference FAILED"); break; }
         };
@@ -137,6 +143,27 @@ pub async fn run_l1_tool_chain(
 
         match result {
             ConsumeResult::Reply { text, thinking } => {
+                // §2.7: Empty reply (model leaked tool syntax into thinking) — never deliver blank
+                if text.trim().is_empty() {
+                    tracing::warn!(iteration = tool_iter + 1, "L1 chain: empty reply after tool calls — re-prompting");
+                    messages.push(Message::text("system",
+                        "[SYSTEM: Your response was empty. Synthesize all tool results above into a response for the user.]"
+                    ));
+                    match provider.chat_sync(messages, Some(tools)).await {
+                        Ok(retry_text) if !retry_text.trim().is_empty() => {
+                            deliver_reply(state, provider, sink.sender, messages, tools, content, session_id, &retry_text, &None).await;
+                            chain_reply = retry_text;
+                        }
+                        _ => {
+                            let error_msg = "I processed your request but was unable to generate a response. Please try again.";
+                            tracing::error!("L1 chain: re-prompt also failed — delivering error");
+                            deliver_reply(state, provider, sink.sender, messages, tools, content, session_id, error_msg, &None).await;
+                            chain_reply = error_msg.to_string();
+                        }
+                    }
+                    stash_chain(pending_chain, chain_tools, content, &chain_reply, session_id);
+                    return;
+                }
                 deliver_reply(state, provider, sink.sender, messages, tools, content, session_id, &text, &thinking).await;
                 chain_reply = text;
                 stash_chain(pending_chain, chain_tools, content, &chain_reply, session_id);
