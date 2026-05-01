@@ -306,10 +306,12 @@ async fn handle_chat_message(
     // Reset cancel flag before starting new inference
     state.cancel_flag.store(false, std::sync::atomic::Ordering::Relaxed);
 
-    // Consume stream using the unified consumer with WebSocket sink
-    use crate::inference::stream_consumer::{self, ConsumeResult, WebSocketSink};
+    // Consume stream with thinking-only sink: text is accumulated silently,
+    // thinking deltas stream live. Text only reaches the WebUI after
+    // deliver_reply → audit_and_retry approves it.
+    use crate::inference::stream_consumer::{self, ConsumeResult, ThinkingOnlySink};
     let cancel = state.cancel_flag.clone();
-    let mut sink = WebSocketSink { sender, cancel };
+    let mut sink = ThinkingOnlySink { sender, cancel };
     let result = stream_consumer::consume_stream(rx, &mut sink).await;
 
     // Handle spiral: re-prompt with thinking disabled
