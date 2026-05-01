@@ -122,6 +122,45 @@ impl<'a> StreamSink for WebSocketSink<'a> {
     }
 }
 
+/// Thinking-only sink — forwards thinking deltas to WebUI but holds back
+/// text content for post-audit delivery. Used in L1 tool chain iterations
+/// where text must pass observer audit before reaching the user.
+///
+/// This restores the pre-6efe0ba `consume_silently` behaviour: thinking
+/// streams live, text waits for `deliver_reply` → `audit_and_retry`.
+pub struct ThinkingOnlySink<'a> {
+    pub sender: &'a mut futures_util::stream::SplitSink<
+        axum::extract::ws::WebSocket,
+        axum::extract::ws::Message,
+    >,
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<'a> StreamSink for ThinkingOnlySink<'a> {
+    // on_text: intentionally a no-op — text is accumulated by consume_stream
+    // but NOT forwarded to the WebSocket. deliver_reply sends it after audit.
+
+    async fn on_thinking(&mut self, delta: &str) {
+        let msg = serde_json::json!({"type": "thinking_delta", "content": delta});
+        let _ = futures_util::SinkExt::send(
+            self.sender,
+            axum::extract::ws::Message::Text(msg.to_string().into()),
+        ).await;
+    }
+
+    async fn on_spiral_detected(&mut self, _thinking_len: usize) {
+        let msg = serde_json::json!({"type": "spiral_detected"});
+        let _ = futures_util::SinkExt::send(
+            self.sender,
+            axum::extract::ws::Message::Text(msg.to_string().into()),
+        ).await;
+    }
+
+    fn should_cancel(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// SSE sink — emits Server-Sent Events for Discord thinking thread.
 /// Buffers thinking tokens and only emits every ~200 chars to avoid
 /// flooding the Discord API with per-token messages.

@@ -125,10 +125,12 @@ pub async fn run_l1_tool_chain(
             Err(e) => { tracing::error!(error = %e, "L1 re-inference FAILED"); break; }
         };
 
-        // Use unified stream consumer with WebSocket sink
-        use crate::inference::stream_consumer::{self, WebSocketSink};
+        // Use thinking-only sink: text is accumulated silently, thinking
+        // deltas stream live. Text only reaches the WebUI after observer
+        // audit approves it via deliver_reply → audit_and_retry.
+        use crate::inference::stream_consumer::{self, ThinkingOnlySink};
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut sink = WebSocketSink { sender, cancel };
+        let mut sink = ThinkingOnlySink { sender, cancel };
         let result = stream_consumer::consume_stream(rx_next, &mut sink).await;
 
         // Handle spiral inline
