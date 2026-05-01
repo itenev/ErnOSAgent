@@ -34,7 +34,7 @@ impl LlamaCppProvider {
             self.config.model_path.clone(),
             "--port".to_string(),
             self.config.port.to_string(),
-            "--jinja".to_string(), // MANDATORY for Gemma 4 tool calling
+            "--jinja".to_string(), // Use model's built-in Jinja chat template for tool calling
             "-c".to_string(),
             "0".to_string(), // Auto-detect context from GGUF
             "-np".to_string(),
@@ -76,7 +76,7 @@ impl LlamaCppProvider {
             body["tools"] = tools.clone();
         }
 
-        // Thinking mode control — Gemma 4 Jinja template requires explicit flag
+        // Thinking mode control — passed to the model's Jinja template via chat_template_kwargs
         body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": thinking});
 
         body
@@ -138,8 +138,8 @@ impl Provider for LlamaCppProvider {
             || props["multimodal"].as_bool().unwrap_or(false)
             || self.config.mmproj_path.is_some(); // Final fallback: config presence
 
-        // Video support: same model that supports vision typically supports
-        // video as frame sequences (Gemma 4, LLaVA, etc.)
+        // Video support: models with vision typically support
+        // video as frame sequences
         let supports_video = supports_vision;
 
         // Audio: not supported by current model architectures via llama-server

@@ -387,7 +387,29 @@ pub async fn swap_model(
         }
 
         config.llamacpp.model_path = model_path.to_string_lossy().to_string();
-        tracing::info!(model = %model_name, path = %config.llamacpp.model_path, "Model swap: updating config");
+
+        // Auto-detect mmproj: scan models/ for a multimodal projector matching this model.
+        // Convention: model "gemma-4-26B-A4B-it-Q4_K_M.gguf" has mmproj "mmproj-gemma-4-26B-A4B-it-bf16.gguf".
+        // We strip the quantisation suffix (Q4_K_M, Q8_0, etc.) and look for an mmproj containing the base name.
+        let model_base = model_name.trim_end_matches(".gguf");
+        let base_no_quant = strip_quant_suffix(model_base);
+        let mmproj = std::fs::read_dir(&models_dir)
+            .ok()
+            .and_then(|entries| {
+                entries.flatten().find(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    name.starts_with("mmproj-") && name.contains(&base_no_quant)
+                })
+            })
+            .map(|e| e.path().to_string_lossy().to_string());
+
+        config.llamacpp.mmproj_path = mmproj.clone();
+        tracing::info!(
+            model = %model_name,
+            mmproj = ?mmproj,
+            path = %config.llamacpp.model_path,
+            "Model swap: updating config"
+        );
 
         // Persist to ern-os.toml
         if let Ok(serialized) = toml::to_string_pretty(&*config) {
@@ -461,4 +483,56 @@ pub async fn shutdown_engine(State(state): State<AppState>) -> impl IntoResponse
         std::process::exit(0);
     });
     Json(serde_json::json!({ "ok": true, "message": "Engine shutting down..." }))
+}
+
+/// Strip quantisation suffix from a model filename base.
+/// e.g. "gemma-4-26B-A4B-it-Q4_K_M" → "gemma-4-26B-A4B-it"
+///      "Qwen_Qwen3.6-27B-Q8_0" → "Qwen_Qwen3.6-27B"
+fn strip_quant_suffix(base: &str) -> String {
+    // Look for the last segment starting with 'Q' followed by a digit (Q4, Q8, Q6, etc.)
+    // or common quantisation markers like 'F16', 'F32', 'bf16'
+    if let Some(pos) = base.rfind('-') {
+        let suffix = &base[pos + 1..];
+        let is_quant = (suffix.starts_with('Q') && suffix.len() >= 2 && suffix.as_bytes()[1].is_ascii_digit())
+            || suffix == "F16"
+            || suffix == "F32"
+            || suffix == "bf16";
+        if is_quant {
+            return base[..pos].to_string();
+        }
+    }
+    // Also handle underscore-separated quantisation (e.g. "Qwen_Qwen3.6-27B-Q8_0")
+    // The Q8_0 part includes an underscore, so the '-Q8_0' is a single segment after the last '-'
+    base.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_quant_suffix_standard() {
+        assert_eq!(strip_quant_suffix("gemma-4-26B-A4B-it-Q4_K_M"), "gemma-4-26B-A4B-it");
+    }
+
+    #[test]
+    fn test_strip_quant_suffix_q8() {
+        assert_eq!(strip_quant_suffix("gemma-4-31B-it-Q8_0"), "gemma-4-31B-it");
+    }
+
+    #[test]
+    fn test_strip_quant_suffix_no_quant() {
+        assert_eq!(strip_quant_suffix("some-model-name"), "some-model-name");
+    }
+
+    #[test]
+    fn test_strip_quant_suffix_f16() {
+        assert_eq!(strip_quant_suffix("mmproj-gemma-4-26B-A4B-it-bf16"), "mmproj-gemma-4-26B-A4B-it");
+    }
+
+    #[test]
+    fn test_strip_quant_suffix_qwen() {
+        // Qwen uses underscore format: "Qwen_Qwen3.6-27B-Q8_0"
+        assert_eq!(strip_quant_suffix("Qwen_Qwen3.6-27B-Q8_0"), "Qwen_Qwen3.6-27B");
+    }
 }
