@@ -12,6 +12,11 @@ use tokio::task::JoinHandle;
 /// Start the background scheduler. Returns a JoinHandle for the spawned task.
 pub fn start(state: AppState) -> JoinHandle<()> {
     tracing::info!("Scheduler started — job-driven cron engine");
+
+    // Spawn system-critical maintenance — unconditional, not user-toggleable.
+    // These are lifecycle invariants, not optional jobs.
+    spawn_maintenance(state.clone());
+
     tokio::spawn(async move {
         let tick_interval = tokio::time::Duration::from_secs(15);
         let mut last_tick = chrono::Utc::now();
@@ -23,6 +28,50 @@ pub fn start(state: AppState) -> JoinHandle<()> {
             last_tick = now;
         }
     })
+}
+
+/// Spawn the three non-optional maintenance loops.
+/// These are hardcoded because they are systemically required — without them
+/// training buffers accumulate unbounded, lessons never decay, and logs fill disk.
+/// They are NOT in scheduler.json because they must not be user-toggleable.
+fn spawn_maintenance(state: AppState) {
+    // Sleep cycle — drain training buffers (every 5 min)
+    let s = state.clone();
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(300);
+        loop {
+            tokio::time::sleep(interval).await;
+            let (success, result) = run_sleep(&s).await;
+            if !success {
+                tracing::error!(result = %result, "Maintenance: sleep_cycle failed");
+            }
+        }
+    });
+
+    // Lesson decay — Hebbian forgetting (every 5 min)
+    let s = state.clone();
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(300);
+        loop {
+            tokio::time::sleep(interval).await;
+            let (success, result) = run_lesson_decay(&s).await;
+            if !success {
+                tracing::error!(result = %result, "Maintenance: lesson_decay failed");
+            }
+        }
+    });
+
+    // Log rotation — clean old files (every 24 hours)
+    tokio::spawn(async move {
+        let interval = tokio::time::Duration::from_secs(86400);
+        loop {
+            tokio::time::sleep(interval).await;
+            let (success, result) = run_log_rotate().await;
+            if !success {
+                tracing::error!(result = %result, "Maintenance: log_rotate failed");
+            }
+        }
+    });
 }
 
 /// Single scheduler tick — check all jobs and run those that are due.

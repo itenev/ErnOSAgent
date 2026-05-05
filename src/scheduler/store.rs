@@ -130,40 +130,12 @@ impl JobStore {
     }
 }
 
-/// Default system jobs created on first boot — only tasks that do real work.
+/// Default system jobs created on first boot — only OPTIONAL tasks.
+/// Maintenance tasks (sleep_cycle, lesson_decay, log_rotate) are hardcoded
+/// lifecycle invariants in spawn_maintenance() and do NOT appear here.
 fn default_system_jobs() -> Vec<CronJob> {
     let now = Utc::now();
     vec![
-        CronJob {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "sleep_cycle".into(),
-            description: "Training consolidation — drains buffers and runs LoRA training".into(),
-            schedule: JobSchedule::Interval(300),
-            task: JobTask::SleepCycle,
-            enabled: true,
-            created_at: now, last_run: None, last_result: None,
-            run_count: 0, builtin: true,
-        },
-        CronJob {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "lesson_decay".into(),
-            description: "Decay unused lesson confidence — Hebbian forgetting".into(),
-            schedule: JobSchedule::Interval(300),
-            task: JobTask::LessonDecay,
-            enabled: true,
-            created_at: now, last_run: None, last_result: None,
-            run_count: 0, builtin: true,
-        },
-        CronJob {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "log_rotate".into(),
-            description: "Clean up log files older than 7 days".into(),
-            schedule: JobSchedule::Cron("0 0 0 * * *".into()),
-            task: JobTask::LogRotate,
-            enabled: true,
-            created_at: now, last_run: None, last_result: None,
-            run_count: 0, builtin: true,
-        },
         CronJob {
             id: uuid::Uuid::new_v4().to_string(),
             name: "attend_class".into(),
@@ -206,7 +178,7 @@ mod tests {
     fn test_load_creates_defaults() {
         let tmp = TempDir::new().unwrap();
         let store = JobStore::load(tmp.path()).unwrap();
-        assert_eq!(store.jobs.len(), 6);
+        assert_eq!(store.jobs.len(), 3); // Only optional learning tasks
         assert!(store.jobs.iter().all(|j| j.builtin));
     }
 
@@ -225,10 +197,10 @@ mod tests {
             run_count: 0, builtin: false,
         };
         store.add(custom).unwrap();
-        assert_eq!(store.jobs.len(), 7);
+        assert_eq!(store.jobs.len(), 4);
 
         assert!(store.remove("custom-1").unwrap());
-        assert_eq!(store.jobs.len(), 6);
+        assert_eq!(store.jobs.len(), 3);
     }
 
     #[test]
@@ -244,9 +216,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = JobStore::load(tmp.path()).unwrap();
         let id = store.jobs[0].id.clone();
-        assert!(store.jobs[0].enabled);
+        assert!(!store.jobs[0].enabled); // Learning tasks start disabled
         store.toggle(&id).unwrap();
-        assert!(!store.jobs.iter().find(|j| j.id == id).unwrap().enabled);
+        assert!(store.jobs.iter().find(|j| j.id == id).unwrap().enabled);
     }
 
     #[test]
@@ -259,7 +231,7 @@ mod tests {
         }
         // Reload from disk
         let store2 = JobStore::load(tmp.path()).unwrap();
-        // Should have 4 builtins (not duplicated)
-        assert_eq!(store2.jobs.len(), 6);
+        // Should have 3 builtins (not duplicated)
+        assert_eq!(store2.jobs.len(), 3);
     }
 }
