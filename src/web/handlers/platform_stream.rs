@@ -204,35 +204,52 @@ async fn run_streaming_pipeline(
             }
             if text.trim().is_empty() {
                 let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-                let estimated_tokens = total_chars / 3;
                 let has_thinking = thinking.as_ref().map_or(false, |t| !t.is_empty());
                 if has_thinking {
-                    // Model exhausted generation budget on reasoning — not overflow.
+                    // Thinking consumed entire generation budget — retry with thinking disabled
                     tracing::warn!(
-                        total_chars, estimated_tokens, msg_count = messages.len(),
+                        total_chars, msg_count = messages.len(),
+                        thinking_chars = thinking.as_ref().map_or(0, |t| t.len()),
                         context_length = state.model_spec.context_length,
-                        "Model produced thinking but empty content — generation budget exhausted"
+                        "Thinking consumed entire generation budget — retrying with thinking disabled"
+                    );
+                    let retry_rx = match provider.chat(&messages, Some(&tools), false).await {
+                        Ok(rx) => rx,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Thinking recovery: provider.chat() failed");
+                            let _ = emit(&tx, "error", &serde_json::json!({"error": e.to_string()})).await;
+                            let _ = emit(&tx, "done", &serde_json::json!({})).await;
+                            return;
+                        }
+                    };
+                    let mut retry_sink = SseSink::new(&tx);
+                    let retry_result = stream_consumer::consume_stream(retry_rx, &mut retry_sink).await;
+                    if let ConsumeResult::Reply { ref text, .. } = retry_result {
+                        if !text.trim().is_empty() {
+                            emit_reply(&state, provider, &mut messages, &tools, &msg, &session_id, text, &tx).await;
+                            let _ = emit(&tx, "done", &serde_json::json!({})).await;
+                            return;
+                        }
+                    }
+                    tracing::error!(
+                        "Thinking recovery also produced empty output — reporting to user"
                     );
                     let _ = emit(&tx, "error", &serde_json::json!({
-                        "error": format!(
-                            "Model spent all generation tokens on reasoning ({} chars thinking). \
-                             Try a shorter session or simpler prompt.",
-                            thinking.as_ref().map_or(0, |t| t.len())
-                        ),
+                        "error": "Model could not produce visible output after retry. Context may be exhausted."
                     })).await;
                 } else {
                     // Genuine empty response — likely context overflow.
                     tracing::error!(
-                        total_chars, estimated_tokens,
+                        total_chars,
                         msg_count = messages.len(),
                         context_length = state.model_spec.context_length,
                         "Model returned completely empty response — possible context overflow"
                     );
                     let _ = emit(&tx, "error", &serde_json::json!({
                         "error": format!(
-                            "Empty response: {} est. tokens vs {} limit ({} messages). \
+                            "Empty response ({} messages, context {}). \
                              Context may be too large — consolidation should have triggered.",
-                            estimated_tokens, state.model_spec.context_length, messages.len()
+                            messages.len(), state.model_spec.context_length
                         ),
                     })).await;
                 }
