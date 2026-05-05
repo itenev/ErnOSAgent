@@ -104,7 +104,7 @@ impl Provider for OpenAICompatProvider {
 
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(async move {
-            if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone()).await {
+            if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone(), None).await {
                 let _ = tx.send(StreamEvent::Error(e.to_string())).await;
             }
         });
@@ -162,7 +162,7 @@ impl Provider for OpenAICompatProvider {
             .unwrap_or(false)
     }
 
-    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<usize> {
+    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>, _thinking: bool) -> Result<usize> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let mut body = serde_json::json!({
             "model": self.config.model,
@@ -174,8 +174,41 @@ impl Provider for OpenAICompatProvider {
             body["tools"] = tools.clone();
         }
 
-        let response = self.client.post(&url).json(&body).send().await
-            .context("count_tokens: failed to connect to OpenAI-compatible provider")?;
+        // Retry on transient connection errors (same policy as chat()/chat_sync() per §9.2)
+        let max_retries = 3;
+        let mut last_err = None;
+        let mut response = None;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(500 * (1 << (attempt - 1)));
+                tracing::warn!(attempt, delay_ms = delay.as_millis() as u64, "Retrying count_tokens after connection error");
+                tokio::time::sleep(delay).await;
+            }
+            match self.client.post(&url).json(&body).send().await {
+                Ok(r) => { response = Some(r); break; }
+                Err(e) => {
+                    let is_connection_error = e.is_connect() || e.is_request()
+                        || format!("{}", e).contains("connection closed")
+                        || format!("{}", e).contains("connection reset");
+                    if is_connection_error && attempt < max_retries {
+                        tracing::warn!(attempt, error = %e, "count_tokens connection error (will retry)");
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e).context(format!(
+                        "count_tokens: failed to connect to provider at {} after {} attempt(s)", url, attempt + 1
+                    ));
+                }
+            }
+        }
+        let response = match response {
+            Some(r) => r,
+            None => match last_err {
+                Some(e) => return Err(e).context(format!("count_tokens: failed after {} retries", max_retries)),
+                None => anyhow::bail!("count_tokens: failed after {} retries — no error captured", max_retries),
+            },
+        };
+
         let data: serde_json::Value = response.json().await
             .context("count_tokens: failed to parse response")?;
 

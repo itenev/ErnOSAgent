@@ -205,8 +205,9 @@ impl Provider for LlamaCppProvider {
                         tracing::info!(attempt, "llama-server request succeeded after retry");
                     }
                     let (tx, rx) = mpsc::channel(256);
+                    let slots_url = format!("{}/slots", self.base_url);
                     tokio::spawn(async move {
-                        if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone()).await {
+                        if let Err(e) = stream_parser::parse_sse_stream(response, tx.clone(), Some(slots_url)).await {
                             let _ = tx.send(StreamEvent::Error(e.to_string())).await;
                         }
                     });
@@ -359,16 +360,81 @@ impl Provider for LlamaCppProvider {
             .unwrap_or(false)
     }
 
-    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<usize> {
+    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>, thinking: bool) -> Result<usize> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let mut body = self.build_chat_body(messages, tools, false, false);
+        let mut body = self.build_chat_body(messages, tools, false, thinking);
         body["max_tokens"] = serde_json::json!(1);
         body["stream"] = serde_json::json!(false);
 
-        let response = self.client.post(&url).json(&body).send().await
-            .context("count_tokens: failed to connect to llama-server")?;
+        // Retry on transient connection errors (same policy as chat()/chat_sync() per §9.2)
+        let max_retries = 3;
+        let mut last_err = None;
+        let mut response = None;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(500 * (1 << (attempt - 1)));
+                tracing::warn!(
+                    attempt, delay_ms = delay.as_millis() as u64,
+                    "Retrying count_tokens after connection error"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            match self.client.post(&url).json(&body).send().await {
+                Ok(r) => { response = Some(r); break; }
+                Err(e) => {
+                    let is_connection_error = e.is_connect()
+                        || e.is_request()
+                        || format!("{}", e).contains("connection closed")
+                        || format!("{}", e).contains("connection reset");
+                    if is_connection_error && attempt < max_retries {
+                        tracing::warn!(
+                            attempt, error = %e,
+                            "count_tokens connection error (will retry)"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e).context(format!(
+                        "count_tokens: failed to connect to llama-server at {} after {} attempt(s)",
+                        url, attempt + 1
+                    ));
+                }
+            }
+        }
+        let response = match response {
+            Some(r) => r,
+            None => match last_err {
+                Some(e) => return Err(e).context(format!(
+                    "count_tokens: failed to connect to llama-server at {} after {} retries",
+                    url, max_retries
+                )),
+                None => anyhow::bail!(
+                    "count_tokens: failed to connect to llama-server at {} after {} retries — no error captured",
+                    url, max_retries
+                ),
+            },
+        };
+
+        let status = response.status();
         let data: serde_json::Value = response.json().await
             .context("count_tokens: failed to parse llama-server response")?;
+
+        // On 400 (oversized prompt), llama-server reports the token count in
+        // the error body as n_prompt_tokens. Extract it — this is a real
+        // measurement from the server's tokenizer, not a heuristic.
+        if !status.is_success() {
+            if let Some(n) = data["error"]["n_prompt_tokens"].as_u64() {
+                tracing::warn!(
+                    status = %status, n_prompt_tokens = n,
+                    "count_tokens: server rejected oversized prompt but reported token count"
+                );
+                return Ok(n as usize);
+            }
+            anyhow::bail!(
+                "count_tokens: llama-server returned {} — {}",
+                status, data
+            );
+        }
 
         data["usage"]["prompt_tokens"]
             .as_u64()

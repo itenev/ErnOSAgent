@@ -9,6 +9,7 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use reqwest::Response;
 use serde::Deserialize;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Accumulated tool call from streaming deltas.
@@ -74,6 +75,7 @@ enum ThinkingState {
 pub async fn parse_sse_stream(
     response: Response,
     tx: mpsc::Sender<StreamEvent>,
+    slots_url: Option<String>,
 ) -> Result<()> {
     let mut tool_calls: Vec<ToolCallAccumulator> = Vec::new();
     let mut thinking_state = ThinkingState::Normal;
@@ -82,11 +84,39 @@ pub async fn parse_sse_stream(
     let mut stream = response.bytes_stream();
     let mut chunk_count: u64 = 0;
     let mut has_content = false; // track if any real content was generated
-    let start = std::time::Instant::now();
+    let start = Instant::now();
+    let mut last_chunk_time = Instant::now();
     let mut line_buffer = String::new(); // Buffer for partial lines split across HTTP chunks
     let mut parsed_lines: Vec<String> = Vec::new(); // Track raw lines for empty response diagnostics
+    let mut stall_interval = tokio::time::interval(Duration::from_secs(10));
+    stall_interval.tick().await; // consume first immediate tick
 
-    while let Some(chunk_result) = stream.next().await {
+    loop {
+        let chunk_result = tokio::select! {
+            chunk_opt = stream.next() => {
+                match chunk_opt {
+                    Some(r) => r,
+                    None => break, // stream ended
+                }
+            }
+            _ = stall_interval.tick() => {
+                if let Some(ref url) = slots_url {
+                    if let Some(stall) = check_server_stall(url, chunk_count, &last_chunk_time).await {
+                        tracing::warn!(
+                            server_decoded = stall.n_decoded,
+                            client_chunks = chunk_count,
+                            secs_since_last_chunk = last_chunk_time.elapsed().as_secs(),
+                            "SSE stream: stall detected — server decoding but client not receiving"
+                        );
+                        let _ = tx.send(StreamEvent::Error(
+                            "Stream stalled: server generating tokens but HTTP stream not flushing".into()
+                        )).await;
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+        };
         // If the consumer dropped the receiver (e.g. spiral detection killed the stream),
         // abort immediately. This drops the HTTP response, freeing the llama-server slot
         // so the recovery request can proceed without blocking.
@@ -109,6 +139,7 @@ pub async fn parse_sse_stream(
         };
 
         chunk_count += 1;
+        last_chunk_time = Instant::now();
         let text = String::from_utf8_lossy(&chunk);
 
         // Diagnostics: log raw content of early chunks at debug level
@@ -198,6 +229,54 @@ pub async fn parse_sse_stream(
     emit_accumulated_tools(&tool_calls, &tx).await;
     let _ = tx.send(StreamEvent::Done).await;
     Ok(())
+}
+
+/// Server stall detection result — carries the server's own reported state.
+struct StallInfo {
+    n_decoded: u64,
+}
+
+/// Check if llama-server is generating tokens that aren't reaching the HTTP stream.
+///
+/// Queries the server's `/slots` endpoint (model-derived data per §2.1) to read
+/// `n_decoded` — the server's real decoded token count. A stall is detected when:
+/// - The server is actively processing (`is_processing == true`)
+/// - The server has decoded significantly more tokens than the client received
+/// - No HTTP chunks have arrived in the recent interval
+///
+/// HEURISTIC: The `n_decoded > 500 && client_chunks < 10` thresholds are derived
+/// from observed minimum generation speed (~13 tok/s on M3 Ultra). At 10-second
+/// intervals, the server generates ≥130 tokens. 500 provides ~4x margin against
+/// prompt-processing spikes. The `<10 chunks` guard prevents false-positives
+/// during normal streaming. Error margin: could false-positive during initial
+/// KV cache fill on very large prompts (>200K tokens), mitigated by the
+/// `is_processing` check and the `last_chunk_time` age requirement.
+async fn check_server_stall(
+    slots_url: &str,
+    client_chunks: u64,
+    last_chunk_time: &Instant,
+) -> Option<StallInfo> {
+    // Only check if we haven't received data for at least 8 seconds
+    if last_chunk_time.elapsed() < Duration::from_secs(8) {
+        return None;
+    }
+
+    let resp = reqwest::get(slots_url).await.ok()?;
+    let slots: Vec<serde_json::Value> = resp.json().await.ok()?;
+    let slot = slots.first()?;
+
+    if !slot["is_processing"].as_bool().unwrap_or(false) {
+        return None; // Server isn't processing — not a stall
+    }
+
+    let n_decoded = slot["next_token"][0]["n_decoded"].as_u64().unwrap_or(0);
+
+    // HEURISTIC: see doc comment above for derivation and error margin.
+    if n_decoded > 500 && client_chunks < 10 {
+        return Some(StallInfo { n_decoded });
+    }
+
+    None
 }
 
 /// Process a single SSE chunk.
@@ -399,18 +478,42 @@ fn accumulate_tool_call(
             tc.name.clone_from(name);
         }
         if let Some(args) = &func.arguments {
-            tc.arguments.push_str(args);
+            let clean = strip_special_tokens(args);
+            if !clean.is_empty() {
+                tc.arguments.push_str(&clean);
+            }
         }
     }
 }
 
+/// Strip model-specific control tokens that should never appear in tool call arguments.
+/// These are generation artifacts from Gemma 4's channel/tool_call system, not valid JSON.
+fn strip_special_tokens(text: &str) -> String {
+    text.replace("<tool_call|>", "")
+        .replace("<|tool_call>", "")
+        .replace("<|channel>thought", "")
+        .replace("<|channel>", "")
+        .replace("<channel|>", "")
+}
+
 /// Emit all accumulated tool calls as StreamEvents.
+/// Validates that accumulated arguments are parseable JSON — skips corrupt calls.
 async fn emit_accumulated_tools(
     tool_calls: &[ToolCallAccumulator],
     tx: &mpsc::Sender<StreamEvent>,
 ) {
     for tc in tool_calls {
         if !tc.name.is_empty() {
+            let args = tc.arguments.trim();
+            if !args.is_empty() && serde_json::from_str::<serde_json::Value>(args).is_err() {
+                tracing::error!(
+                    tool = %tc.name,
+                    args_len = args.len(),
+                    args_preview = %args.chars().take(200).collect::<String>(),
+                    "Corrupt tool call arguments — skipping (model emitted control tokens in args)"
+                );
+                continue;
+            }
             let _ = tx
                 .send(StreamEvent::ToolCall {
                     id: tc.id.clone(),

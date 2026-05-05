@@ -270,6 +270,34 @@ async fn run_streaming_pipeline(
         ConsumeResult::Escalate { objective, plan, .. } => {
             emit_escalation(&state, provider, messages, &msg, &session_id, &objective, plan, &tx).await;
         }
+        ConsumeResult::Error(ref e) if e.contains("Stream stalled") => {
+            // Stream stalled during thinking — retry with thinking disabled
+            // Same recovery pattern as spiral detection (line 186)
+            tracing::warn!(error = %e, "Platform stream: retrying after stall with thinking disabled");
+            let _ = emit(&tx, "stall_reprompt", &serde_json::json!({})).await;
+            let retry_rx = match provider.chat(&messages, Some(&tools), false).await {
+                Ok(rx) => rx,
+                Err(retry_err) => {
+                    tracing::error!(error = %retry_err, "Stall recovery: provider.chat() failed");
+                    let _ = emit(&tx, "error", &serde_json::json!({"error": retry_err.to_string()})).await;
+                    let _ = emit(&tx, "done", &serde_json::json!({})).await;
+                    return;
+                }
+            };
+            let mut retry_sink = SseSink::new(&tx);
+            let retry_result = stream_consumer::consume_stream(retry_rx, &mut retry_sink).await;
+            if let ConsumeResult::Reply { ref text, .. } = retry_result {
+                if !text.trim().is_empty() {
+                    emit_reply(&state, provider, &mut messages, &tools, &msg, &session_id, text, &tx).await;
+                    let _ = emit(&tx, "done", &serde_json::json!({})).await;
+                    return;
+                }
+            }
+            tracing::error!("Stall recovery also failed — reporting to user");
+            let _ = emit(&tx, "error", &serde_json::json!({
+                "error": "Inference stalled during thinking. Retry with thinking disabled also failed."
+            })).await;
+        }
         ConsumeResult::Error(e) => {
             let _ = emit(&tx, "error", &serde_json::json!({"error": e})).await;
         }
