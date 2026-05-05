@@ -159,7 +159,11 @@ pub fn format_timeline_narrative(timeline: &crate::memory::timeline::TimelineSto
     for entry in recent.iter().take(5) {
         let time = entry.timestamp.format("%H:%M").to_string();
         let summary: &str = entry.transcript.lines().next().unwrap_or("(empty)");
-        let truncated = if summary.len() > 80 { &summary[..80] } else { summary };
+        let truncated = if summary.len() > 80 {
+            let boundary = summary.char_indices().take_while(|(i, _)| *i <= 80)
+                .last().map(|(i, _)| i).unwrap_or(0);
+            &summary[..boundary]
+        } else { summary };
         out.push_str(&format!("[{}] {}\n", time, truncated));
     }
     out
