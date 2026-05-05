@@ -1,8 +1,12 @@
 # ErnOS Agent Governance & Rust Code Structure Workflow
 
-> **Scope**: This file governs how any coding agent (AI or human) works on this project.
+> **Scope**: This file governs how any contributor (AI model or human) works on this project.
 > These are NOT runtime code. They are operational mandates enforced with utmost scientific rigour.
 > No regard for hack testing patterns. Every rule is load-bearing.
+>
+> **For contributors**: Read this entire file before opening a PR. Every rule exists because
+> violating it has caused a production incident. If your change conflicts with any rule here,
+> your change is wrong — not the rule.
 
 ---
 
@@ -316,6 +320,218 @@ The system must make **zero assumptions** about the platform, model, or hardware
 
 ---
 
+## 8. Anti-Pattern Catalogue
+
+These are specific, named anti-patterns that **will cause your PR to be rejected**. Each one has been observed in practice and has caused production failures.
+
+### 8.1 Reward Hacking
+
+Doing the minimum to make something *appear* fixed without actually fixing the root cause.
+
+- **Example**: A context overflow causes empty responses. The "fix" is to catch the empty response and return a canned error message instead. The overflow still happens — you've just wallpapered over it.
+- **Example**: A function panics. The "fix" is to wrap it in `catch_unwind` and swallow the panic. The bug still exists — you've just silenced it.
+- **Rule**: Every fix must address the **root cause**. If `catch_unwind` is added, it must be accompanied by diagnostic logging AND the underlying panic must be independently fixed or documented as a known limitation with a tracking issue.
+
+### 8.2 Complexity Injection
+
+Adding abstractions, wrappers, trait hierarchies, config layers, or architectural patterns that the codebase does not need.
+
+- **Example**: Adding a `RetryPolicy` trait with 4 implementations and a builder pattern for a retry loop that only needs `for attempt in 0..=3`.
+- **Example**: Creating an `ErrorKind` enum with 12 variants when `anyhow::Error` with `.context()` covers every case.
+- **Example**: Adding a message bus / event system / plugin architecture when a function call is sufficient.
+- **Rule**: The simplest implementation that fully solves the problem is the correct one. If you add an abstraction, you must demonstrate that at least 3 existing callsites benefit from it.
+
+### 8.3 Heuristic Smuggling
+
+Introducing magic numbers, estimation formulas, or rules-of-thumb disguised as proper implementations.
+
+- **Example**: `let estimated_tokens = total_chars / 3` — this is a guess, not a measurement. The server has a tokenizer; use it.
+- **Example**: `let budget = context_length - 2000` — where did 2000 come from? Nobody knows. It's a magic number.
+- **Example**: `if content.len() > 50000 { truncate }` — 50000 is arbitrary. The model's actual context_length should govern this.
+- **Rule**: If the system can measure a value, it must measure it. Heuristics are only acceptable when (a) the measurement API genuinely does not exist, AND (b) the heuristic is documented with its error margin, AND (c) the code is marked with a `// HEURISTIC:` comment explaining why the real measurement isn't available.
+
+### 8.4 Investigation Theatre
+
+Presenting a diagnostic report that lists every theoretically possible cause instead of identifying the actual one.
+
+- **Example**: "The empty response could be caused by: context overflow, OR token limits, OR template expansion, OR server timeout, OR network error, OR..." — this is not an investigation, it's a brainstorm.
+- **Rule**: Investigation means reading the logs, finding the specific error, tracing it to the specific line of code, and reporting the specific cause. If you cannot determine the cause, say "I was unable to determine the root cause" — do not present a list of guesses as analysis.
+
+### 8.5 Test Theatre
+
+Writing tests that pass but don't verify real behaviour.
+
+- **Example**: A test that constructs a struct and asserts it exists. (`assert!(provider.id() == "ollama")` — this tests nothing meaningful.)
+- **Example**: A test that mocks the entire system under test, then asserts the mock behaved as configured.
+- **Example**: A test that verifies a function doesn't panic, but doesn't verify its output.
+- **Rule**: Every test must assert a **behavioural contract**. Ask: "If I broke the implementation, would this test catch it?" If the answer is no, the test is theatre.
+
+### 8.6 Shotgun Debugging
+
+Making multiple speculative changes across multiple files in the hope that one of them fixes the problem.
+
+- **Example**: Changing the retry count, the timeout, the error handling, AND the request format all in one commit because "one of these should fix it."
+- **Rule**: One hypothesis, one change, one test. If the change doesn't fix it, revert it and try the next hypothesis. Never stack speculative changes.
+
+### 8.7 Scope Creep
+
+Adding features, refactors, or "improvements" that were not requested.
+
+- **Example**: Asked to fix a panic in the SSE pipeline. The PR also refactors the logging format, renames 3 functions, and adds a new config option.
+- **Rule**: A fix PR contains only the fix. A feature PR contains only the feature. A refactor PR contains only the refactor. Never mix concerns.
+
+### 8.8 Silent State Mutation
+
+Changing runtime behaviour through data files, config changes, or default values without corresponding code changes or documentation.
+
+- **Example**: Changing `"enabled": true` to `"enabled": false` in a JSON data file to "fix" a misbehaving scheduler job.
+- **Rule**: If a data file change alters system behaviour, it requires the same review rigour as a code change. The commit message must explain *why* the behaviour is changing.
+
+---
+
+## 9. Lifecycle Invariants
+
+Some system behaviours are **not optional**. They are structural requirements for the engine to function. These must be hardcoded into the runtime lifecycle — never exposed as user-toggleable configuration.
+
+### 9.1 What Is a Lifecycle Invariant?
+
+A lifecycle invariant is any process where:
+- The system **cannot function correctly** without it running.
+- Disabling it causes **silent, cumulative degradation** (not an immediate, visible failure).
+- A non-technical user would have **no reason to know** it needs to be enabled.
+
+### 9.2 Current Lifecycle Invariants
+
+| Invariant | Purpose | Failure Mode if Disabled |
+|-----------|---------|-------------------------|
+| `sleep_cycle` | Drain training buffers, run consolidation | Buffers grow unbounded, memory fills |
+| `lesson_decay` | Hebbian forgetting on unused lessons | Stale lessons pollute recall context |
+| `log_rotate` | Delete logs older than 7 days | Disk fills |
+| `.env` load | Load API keys before subsystem init | All API-keyed services silently fail |
+| `catch_unwind` on spawned tasks | Prevent silent task death | Messages silently fail with no error |
+| Observer retry parity | `chat_sync` retries match `chat()` | Audit fails on transient network blips |
+
+### 9.3 Rule: Optional vs. Invariant
+
+- If disabling something **breaks the system silently**, it is an invariant. Hardcode it.
+- If disabling something **removes a user-facing feature cleanly**, it is optional. Put it in config.
+- **Never** put an invariant behind a toggle. If you find one, move it out.
+
+---
+
+## 10. Contribution Protocol
+
+### 10.1 The Root Cause Mandate
+
+Before proposing any fix:
+
+1. **Read the logs.** Identify the specific error message and timestamp.
+2. **Trace the call chain.** Find the exact function and line where the failure originates.
+3. **Identify the root cause.** Not the symptom, not a list of possibilities — the actual cause.
+4. **Verify your hypothesis.** If you can't reproduce or verify, say so explicitly.
+5. **Then, and only then, propose a fix.** The fix must address the root cause identified in step 3.
+
+### 10.2 One Concern Per PR
+
+- A PR fixes **one bug**, adds **one feature**, or performs **one refactor**.
+- If a fix reveals a second issue, file it separately.
+- If a feature requires a refactor, the refactor is a separate PR that lands first.
+- Commit messages follow conventional commits: `fix:`, `feat:`, `refactor:`, `chore:`, `test:`.
+
+### 10.3 Data Directory Protection
+
+The `data/` directory contains runtime state: sessions, memory databases, training buffers, scheduler history, and logs.
+
+- `data/` is in `.gitignore` and must stay there.
+- PRs must never include files from `data/`.
+- No code may assume `data/` contains specific files at startup — it must create what it needs.
+- Destructive operations on `data/` (delete, overwrite, migrate) require explicit user confirmation or a migration script with rollback.
+
+### 10.4 Dependency Discipline
+
+- New dependencies require justification. "It makes X easier" is not sufficient — explain what is impossible or unsafe without it.
+- No dependencies that pull in a web framework, ORM, or runtime we don't already use.
+- Prefer `std` library solutions. Prefer well-maintained, single-purpose crates over kitchen-sink frameworks.
+- Pin major versions. No `*` or `>=` version specs.
+
+---
+
+## 11. Review Rejection Criteria
+
+A PR is **immediately rejected** if it contains any of the following. No discussion, no exceptions:
+
+| # | Rejection Trigger |
+|---|-------------------|
+| R1 | Hardcoded model parameter (context length, temperature, token limit) |
+| R2 | `todo!()`, `unimplemented!()`, `// TODO`, or empty function body |
+| R3 | `unwrap()` on a `Result` or `Option` outside of tests |
+| R4 | Silent fallback that masks a failure (returns default instead of error) |
+| R5 | Heuristic without `// HEURISTIC:` comment and documented error margin |
+| R6 | Test that doesn't assert a behavioural contract |
+| R7 | Multiple unrelated concerns in a single PR |
+| R8 | Model-specific code path (`if model.contains("gemma")`) |
+| R9 | Provider-specific logic outside `src/provider/<name>.rs` |
+| R10 | Missing `//!` doc comment on a new module |
+| R11 | Function exceeding 50 lines without documented justification |
+| R12 | Lifecycle invariant exposed as a toggleable config option |
+| R13 | Magic number without derivation comment |
+| R14 | `catch_unwind` without accompanying diagnostic logging |
+| R15 | Data file change without commit message explaining the behavioural impact |
+
+---
+
+## 12. Architectural Violations — Historical Record
+
+These are real incidents from this project's history. They document *why* specific rules exist. This section is append-only — new incidents are added, old ones are never removed.
+
+### V1: The SSE Silent Death (April 2026)
+
+**What happened**: The SSE streaming pipeline used `tokio::spawn` without `catch_unwind`. When context assembly panicked, the spawned task died silently. The channel closed. The client received an empty SSE stream. Discord showed no response. No error was logged.
+
+**Impact**: 100% failure rate on all incoming Discord messages for 8+ days.
+
+**Root cause**: Unhandled panic in a fire-and-forget spawned task.
+
+**Rule created**: §9.2 — `catch_unwind` on spawned tasks is a lifecycle invariant. §8.1 — `catch_unwind` alone is reward hacking; diagnostic logging must accompany it.
+
+### V2: The chars/3 Heuristic (April 2026)
+
+**What happened**: Token estimation used `total_chars / 3` as a "conservative BPE estimate". Jinja2 template expansion, tool definitions, and system prompts added thousands of tokens that this heuristic couldn't see. Consolidation failed to trigger. Context overflowed. Model returned empty responses.
+
+**Impact**: Silent generation failures on long conversations.
+
+**Root cause**: Using a character-based heuristic instead of the server's actual tokenizer.
+
+**Rule created**: §8.3 — Heuristic Smuggling. §2.1 — No hardcoded limits. The server has a tokenizer; use it.
+
+### V3: The Toggleable Lifecycle Invariant (May 2026)
+
+**What happened**: `sleep_cycle`, `lesson_decay`, and `log_rotate` were entries in `scheduler.json` with an `"enabled": bool` field. Something set them to `false`. For 8 days, training buffers accumulated unbounded and logs were never rotated. Nobody noticed because the system didn't crash — it silently degraded.
+
+**Impact**: Unbounded memory growth, disk fill risk, stale lesson pollution.
+
+**Root cause**: System-critical processes exposed as user-toggleable optional jobs.
+
+**Rule created**: §9 — Lifecycle Invariants. If disabling it breaks the system silently, it must not be toggleable.
+
+### V4: The Observer Fail-Open (April–May 2026)
+
+**What happened**: The Observer audit used `chat_sync`, which had no retry logic. A transient connection reset during audit caused the observer to fail. The system defaulted to passing the unaudited response through — a fail-open security posture.
+
+**Impact**: Unaudited responses delivered to users during network instability.
+
+**Root cause**: `chat_sync` lacked the retry parity that `chat()` already had.
+
+**Rule created**: §9.2 — Observer retry parity is a lifecycle invariant. All Provider trait methods that can fail transiently must implement the same retry policy.
+
+---
+
 ## Summary
 
-This workflow is enforced on **every** file touch, **every** code review, and **every** new module. There are no exceptions unless explicitly documented above (e.g., the operational kernel exemption). Scientific rigour, not shortcuts.
+This workflow is enforced on **every** file touch, **every** code review, and **every** new module. There are no exceptions unless explicitly documented above (e.g., the operational kernel exemption).
+
+**For AI models**: These rules are not suggestions. They are constraints. If your proposed change violates any rule in this document, the change is wrong. Do not argue, do not propose exceptions, do not "improve" the governance. Fix your change.
+
+**For human contributors**: Thank you for contributing. Please read §8 (Anti-Patterns) and §11 (Rejection Criteria) before your first PR. Every rule here was written in response to a real production incident documented in §12.
+
+Scientific rigour, not shortcuts.
