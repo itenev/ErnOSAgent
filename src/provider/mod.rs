@@ -262,6 +262,11 @@ pub trait Provider: Send + Sync {
 
     /// Health check — returns true if the backend is reachable.
     async fn health(&self) -> bool;
+
+    /// Count tokens for a set of messages using the provider's tokenizer.
+    /// Returns the exact token count as reported by the backend.
+    /// This MUST query the actual tokenizer — no heuristics (§2.1).
+    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<usize>;
 }
 
 /// Factory function — create the active provider from config.

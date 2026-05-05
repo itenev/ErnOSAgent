@@ -358,6 +358,23 @@ impl Provider for LlamaCppProvider {
             .map(|r| r.status().is_success())
             .unwrap_or(false)
     }
+
+    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<usize> {
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let mut body = self.build_chat_body(messages, tools, false, false);
+        body["max_tokens"] = serde_json::json!(1);
+        body["stream"] = serde_json::json!(false);
+
+        let response = self.client.post(&url).json(&body).send().await
+            .context("count_tokens: failed to connect to llama-server")?;
+        let data: serde_json::Value = response.json().await
+            .context("count_tokens: failed to parse llama-server response")?;
+
+        data["usage"]["prompt_tokens"]
+            .as_u64()
+            .map(|v| v as usize)
+            .context("count_tokens: llama-server did not report prompt_tokens in usage")
+    }
 }
 
 #[cfg(test)]

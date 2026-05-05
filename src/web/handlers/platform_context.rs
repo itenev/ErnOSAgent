@@ -28,7 +28,7 @@ pub fn enforce_context_budget(
     context_length: usize,
 ) {
     let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-    let estimated_tokens = total_chars / 2 + 2000;
+    let estimated_tokens = total_chars / 2;
     let budget = (context_length as f64 * 0.60) as usize;
 
     if estimated_tokens <= budget {
@@ -74,7 +74,7 @@ fn trim_tool_messages(
 
     for &idx in tool_indices {
         let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
-        let estimated = total_chars / 2 + 2000;
+        let estimated = total_chars / 2;
         if estimated <= context_length {
             break;
         }

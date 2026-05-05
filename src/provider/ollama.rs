@@ -150,6 +150,29 @@ impl Provider for OllamaProvider {
             .map(|r| r.status().is_success())
             .unwrap_or(false)
     }
+
+    async fn count_tokens(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<usize> {
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": messages,
+            "stream": false,
+            "max_tokens": 1,
+        });
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+        }
+
+        let response = self.client.post(&url).json(&body).send().await
+            .context("count_tokens: failed to connect to Ollama")?;
+        let data: serde_json::Value = response.json().await
+            .context("count_tokens: failed to parse Ollama response")?;
+
+        data["usage"]["prompt_tokens"]
+            .as_u64()
+            .map(|v| v as usize)
+            .context("count_tokens: Ollama did not report prompt_tokens in usage")
+    }
 }
 
 #[cfg(test)]

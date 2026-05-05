@@ -207,24 +207,33 @@ async fn consolidate_if_needed(
     session_history: Vec<Message>,
     system_prompt: &str,
     content: &str,
-    tools_chars: usize,
+    _tools_chars: usize,
 ) -> Vec<Message> {
     let context_length = state.model_spec.context_length;
-    let history_chars: usize = session_history.iter().map(|m| m.text_content().len()).sum();
-    let total_chars = history_chars + system_prompt.len() + content.len() + tools_chars;
-    let estimated_tokens = total_chars / 3; // Conservative BPE estimate (~3.2 chars/token)
+
+    // Use the provider's tokenizer for exact token count (§2.1 — no heuristics)
+    let mut temp_messages = session_history.clone();
+    temp_messages.push(Message::text("system", system_prompt));
+    temp_messages.push(Message::text("user", content));
+    let tools_json = crate::tools::schema::layer1_tools();
+    let estimated_tokens = match state.provider.count_tokens(&temp_messages, Some(&tools_json)).await {
+        Ok(t) => t,
+        Err(e) => {
+            // §2.7: fail to OFF — consolidation disabled for this turn
+            tracing::error!(
+                error = %e,
+                "count_tokens failed — consolidation disabled for this turn"
+            );
+            return session_history;
+        }
+    };
     let usage_pct = estimated_tokens as f32 / context_length as f32;
 
     tracing::debug!(
-        history_chars,
-        system_chars = system_prompt.len(),
-        content_chars = content.len(),
-        tools_chars,
-        total_chars,
         estimated_tokens,
         context_length,
         usage_pct = format!("{:.1}%", usage_pct * 100.0),
-        "Context usage accounting"
+        "Context usage accounting (server-side tokenization)"
     );
 
     if usage_pct < 0.60 {
