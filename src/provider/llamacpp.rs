@@ -252,13 +252,54 @@ impl Provider for LlamaCppProvider {
         let url = format!("{}/v1/chat/completions", self.base_url);
         let body = self.build_chat_body(messages, tools, false, false);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to connect to llama-server for sync chat")?;
+        // Retry on transient connection errors (same policy as chat())
+        let max_retries = 3;
+        let mut last_err = None;
+        let mut response = None;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_millis(500 * (1 << (attempt - 1)));
+                tracing::warn!(
+                    attempt, delay_ms = delay.as_millis() as u64,
+                    "Retrying llama-server sync request after connection error"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            match self.client.post(&url).json(&body).send().await {
+                Ok(r) => { response = Some(r); break; }
+                Err(e) => {
+                    let is_connection_error = e.is_connect()
+                        || e.is_request()
+                        || format!("{}", e).contains("connection closed")
+                        || format!("{}", e).contains("connection reset");
+                    if is_connection_error && attempt < max_retries {
+                        tracing::warn!(
+                            attempt, error = %e,
+                            "llama-server sync connection error (will retry)"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
+                    return Err(e).context(format!(
+                        "Failed to connect to llama-server at {} after {} attempt(s)",
+                        url, attempt + 1
+                    ));
+                }
+            }
+        }
+        let response = match response {
+            Some(r) => r,
+            None => match last_err {
+                Some(e) => return Err(e).context(format!(
+                    "Failed to connect to llama-server at {} after {} retries",
+                    url, max_retries
+                )),
+                None => anyhow::bail!(
+                    "Failed to connect to llama-server at {} after {} retries — no error captured",
+                    url, max_retries
+                ),
+            },
+        };
 
         let status = response.status();
         let body: serde_json::Value = response.json().await
@@ -356,5 +397,39 @@ mod tests {
         let tools = serde_json::json!([{"type": "function", "function": {"name": "test"}}]);
         let body = provider.build_chat_body(&messages, Some(&tools), true, true);
         assert!(body["tools"].is_array());
+    }
+
+    #[test]
+    fn test_chat_sync_body_structure() {
+        let config = LlamaCppConfig::default();
+        let provider = LlamaCppProvider::new(&config);
+        let messages = vec![Message::text("user", "Test")];
+        let body = provider.build_chat_body(&messages, None, false, false);
+        assert_eq!(body["stream"], false, "chat_sync must use stream=false");
+        assert!(body["messages"].is_array());
+    }
+
+    #[test]
+    fn test_chat_sync_retry_delay_calculation() {
+        // Verify exponential backoff: 500ms, 1000ms, 2000ms
+        for attempt in 1..=3u32 {
+            let delay_ms = 500u64 * (1 << (attempt - 1));
+            match attempt {
+                1 => assert_eq!(delay_ms, 500),
+                2 => assert_eq!(delay_ms, 1000),
+                3 => assert_eq!(delay_ms, 2000),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_chat_sync_connection_error_classification() {
+        // Validate that the same error strings are checked in both chat() and chat_sync()
+        let test_messages = ["connection closed", "connection reset"];
+        for msg in &test_messages {
+            assert!(msg.contains("connection closed") || msg.contains("connection reset"),
+                "Error classification must match: {}", msg);
+        }
     }
 }

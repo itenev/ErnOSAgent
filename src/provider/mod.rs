@@ -250,6 +250,7 @@ pub trait Provider: Send + Sync {
 
     /// Non-streaming chat completion — returns the full response text.
     /// Used for Observer audit (thinking disabled for latency).
+    /// Implementations MUST retry transient connection errors (same policy as `chat()`).
     async fn chat_sync(
         &self,
         messages: &[Message],
