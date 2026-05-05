@@ -115,26 +115,37 @@ pub fn format_kg_snapshot(synaptic: &crate::memory::synaptic::SynapticGraph) -> 
     out
 }
 
-/// Phase 7: Extract last 3 assistant reasoning summaries (capped at 500 chars).
-pub fn extract_recent_reasoning(history: &[Message]) -> Vec<String> {
-    let mut traces = Vec::new();
-    for msg in history.iter().rev() {
-        if msg.role == "assistant" {
-            let text = msg.text_content();
-            if !text.is_empty() {
-                let truncated = if text.len() > 500 {
-                    let boundary = text.char_indices().take_while(|(i, _)| *i <= 500)
-                        .last().map(|(i, _)| i).unwrap_or(0);
-                    format!("{}...", &text[..boundary])
-                } else {
-                    text.to_string()
-                };
-                traces.push(truncated);
-                if traces.len() >= 3 { break; }
-            }
-        }
+/// Phase 7: Extract last 3 thinking traces from the persisted reasoning log.
+/// Reads `data/reasoning/{session_id}.jsonl` and returns entries with actual
+/// chain-of-thought content, truncated to 500 chars each (char-boundary safe).
+pub fn extract_recent_reasoning(data_dir: &std::path::Path, session_id: &str) -> Vec<String> {
+    let path = data_dir.join("reasoning").join(format!("{}.jsonl", session_id));
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let mut traces: Vec<String> = content.lines()
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let thinking = v["thinking"].as_str()?;
+            if thinking.is_empty() { return None; }
+            let truncated = if thinking.len() > 500 {
+                let boundary = thinking.char_indices()
+                    .take_while(|(i, _)| *i <= 500)
+                    .last().map(|(i, _)| i).unwrap_or(0);
+                format!("{}...", &thinking[..boundary])
+            } else {
+                thinking.to_string()
+            };
+            Some(truncated)
+        })
+        .collect();
+
+    // Keep only the last 3
+    if traces.len() > 3 {
+        traces = traces.split_off(traces.len() - 3);
     }
-    traces.reverse();
     traces
 }
 

@@ -42,6 +42,7 @@ pub async fn audit_and_retry(
                     "approved": true, "confidence": output.result.confidence,
                     "category": &output.result.failure_category,
                 })).await;
+                observer::persist_audit_result(&state.config.general.data_dir, &output.result);
                 training_capture::capture_approved_with_flags(
                     state, user_query, &current_text,
                     output.result.confidence, &output.result.positive_flags,
@@ -64,6 +65,7 @@ pub async fn audit_and_retry(
                 send_ws(sender, "audit_completed", &serde_json::json!({
                     "approved": false, "category": &output.result.failure_category, "reason": &reason,
                 })).await;
+                observer::persist_audit_result(&state.config.general.data_dir, &output.result);
 
                 current_text = retry_with_feedback(
                     state, provider, sender, messages, tools,

@@ -83,8 +83,8 @@ pub async fn build_chat_context(
     // ── Phase 5: System log tail (WARN/ERROR only) ──
     let system_log_tail = hud_data::read_log_tail(&state.config.general.data_dir);
 
-    // ── Phase 7: Reasoning traces from session history ──
-    let reasoning_traces = hud_data::extract_recent_reasoning(&session_history);
+    // ── Phase 7: Reasoning traces from persisted thinking logs ──
+    let reasoning_traces = hud_data::extract_recent_reasoning(&state.config.general.data_dir, session_id);
 
     // ── Phase 8: Active steering vectors ──
     let active_steering = hud_data::format_active_steering(&state.config.general.data_dir);

@@ -77,6 +77,10 @@ impl Provider for MockProvider {
         Ok(self.embed_response.clone())
     }
 
+    async fn count_tokens(&self, messages: &[Message], _tools: Option<&serde_json::Value>) -> anyhow::Result<usize> {
+        Ok(messages.iter().map(|m| m.text_content().len() / 3).sum())
+    }
+
     async fn health(&self) -> bool { true }
 }
 

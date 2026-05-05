@@ -18,7 +18,7 @@ pub async fn execute(args: &serde_json::Value, state: &AppState) -> Result<Strin
     }
 }
 
-/// Read the per-session reasoning log (JSONL).
+/// Read the per-session reasoning log (JSONL) and format with thinking excerpts.
 fn get_reasoning_log(data_dir: &Path, args: &serde_json::Value) -> Result<String> {
     let session_id = args["session_id"].as_str().unwrap_or("");
 
@@ -41,14 +41,37 @@ fn get_reasoning_log(data_dir: &Path, args: &serde_json::Value) -> Result<String
     let per_page = args["per_page"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
     let total_pages = (total + per_page - 1).max(1) / per_page.max(1);
     let page = page.min(total_pages);
-    // Show most recent entries first — reverse order
     let reversed: Vec<&str> = lines.iter().rev().cloned().collect();
     let start = (page - 1) * per_page;
     let end = (start + per_page).min(total);
     let slice = &reversed[start..end];
 
+    let formatted: Vec<String> = slice.iter().map(|line| format_reasoning_entry(line)).collect();
+
     Ok(format!("Reasoning log:\n{}\n--- Page {}/{} ({} total) ---",
-        slice.join("\n"), page, total_pages, total))
+        formatted.join("\n\n"), page, total_pages, total))
+}
+
+/// Format a single JSONL reasoning entry for display.
+fn format_reasoning_entry(line: &str) -> String {
+    let v: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return line.to_string(),
+    };
+    let ts = v["ts"].as_str().unwrap_or("?");
+    let result = v["result"].as_str().unwrap_or("?");
+    let text_len = v["text_len"].as_u64().unwrap_or(0);
+    let thinking_len = v["thinking_len"].as_u64().unwrap_or(0);
+    let thinking = v["thinking"].as_str().unwrap_or("");
+
+    let excerpt = if thinking.is_empty() {
+        "(no thinking captured)".to_string()
+    } else {
+        truncate_at_char_boundary(thinking, 500)
+    };
+
+    format!("[{}] {}/{} chars\n  Thinking ({} chars): {}",
+        ts, result, text_len, thinking_len, excerpt)
 }
 
 /// Read agent activity feed.
@@ -193,15 +216,74 @@ fn most_recent_file(dir: &Path, ext: &str) -> Result<std::path::PathBuf> {
     Ok(best.map(|(_, p)| p).unwrap_or_else(|| dir.join("none.jsonl")))
 }
 
-/// Append a reasoning event to the per-session log.
-pub fn log_reasoning_event(data_dir: &Path, session_id: &str, event: &serde_json::Value) {
+/// Append a reasoning event to the per-session log, including thinking content.
+pub fn log_reasoning_event(
+    data_dir: &Path, session_id: &str,
+    event: &serde_json::Value, thinking: Option<&str>,
+) {
     let dir = data_dir.join("reasoning");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{}.jsonl", session_id));
-    if let Ok(mut line) = serde_json::to_string(event) {
+
+    let mut entry = event.clone();
+    entry["ts"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+    if let Some(t) = thinking {
+        if !t.is_empty() {
+            entry["thinking"] = serde_json::Value::String(t.to_string());
+        }
+    }
+
+    if let Ok(mut line) = serde_json::to_string(&entry) {
         line.push('\n');
         let _ = std::fs::OpenOptions::new()
             .create(true).append(true).open(&path)
             .and_then(|mut f| { use std::io::Write; f.write_all(line.as_bytes()) });
     }
+
+    // HEURISTIC: Prune entries older than 1 hour. The 1-hour window matches the
+    // user requirement for "last hour" reasoning access. The 50-entry threshold
+    // avoids rewriting the file on every single write. Error margin: entries
+    // may persist up to 1 write past the 1-hour boundary.
+    prune_old_entries(&path, 50);
+}
+
+/// Remove entries older than 1 hour from a JSONL reasoning log.
+/// Only runs when the file exceeds `min_entries` to avoid unnecessary IO.
+fn prune_old_entries(path: &Path, min_entries: usize) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= min_entries {
+        return;
+    }
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(1);
+    let kept: Vec<&str> = lines.iter().copied().filter(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v["ts"].as_str().map(|s| s.to_string()))
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(&ts).ok())
+            .map_or(true, |dt| dt >= cutoff)
+    }).collect();
+
+    let pruned = lines.len() - kept.len();
+    if pruned > 0 {
+        tracing::debug!(pruned, remaining = kept.len(), "Pruned old reasoning entries");
+        let _ = std::fs::write(path, kept.join("\n") + "\n");
+    }
+}
+
+/// Truncate a string at a char boundary, appending "..." if truncated.
+fn truncate_at_char_boundary(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let boundary = s.char_indices()
+        .take_while(|(i, _)| *i <= max)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!("{}...", &s[..boundary])
 }

@@ -324,6 +324,7 @@ pub async fn audit_and_capture(
             provider, messages, &current_text, &tool_context, user_query,
         ).await {
             Ok(output) if output.result.verdict.is_allowed() => {
+                crate::observer::persist_audit_result(&state.config.general.data_dir, &output.result);
                 return handle_approved(state, user_query, &current_text, session_id, &output.result, retries);
             }
             Ok(output) => {
@@ -336,6 +337,7 @@ pub async fn audit_and_capture(
                     how_to_fix = %output.result.how_to_fix,
                     "Observer BLOCKED — re-inferring with feedback"
                 );
+                crate::observer::persist_audit_result(&state.config.general.data_dir, &output.result);
                 current_text = retry_after_rejection(
                     state, provider, messages, tools, user_query, session_id, &rejected, &output.result,
                 ).await;

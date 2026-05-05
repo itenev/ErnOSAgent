@@ -202,6 +202,10 @@ async fn run_streaming_pipeline(
             if let Some(ref t) = thinking {
                 let _ = emit(&tx, "thinking_complete", &serde_json::json!({"length": t.len()})).await;
             }
+            crate::tools::introspect_tool::log_reasoning_event(
+                &state.config.general.data_dir, &session_id,
+                &serde_json::json!({"type":"inference","result":"reply","text_len":text.len(),"thinking_len":thinking.as_ref().map(|t|t.len()).unwrap_or(0)}),
+                thinking.as_deref());
             if text.trim().is_empty() {
                 let total_chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
                 let has_thinking = thinking.as_ref().map_or(false, |t| !t.is_empty());

@@ -69,7 +69,9 @@ pub async fn execute_tool_with_state(
     };
 
     let elapsed = start.elapsed();
-    format_tool_result(&tc.id, &tc.name, result, elapsed)
+    let result = format_tool_result(&tc.id, &tc.name, result, elapsed);
+    log_agent_activity(&state.config.general.data_dir, &tc.name, result.success, elapsed);
+    result
 }
 
 fn format_tool_result(
@@ -79,6 +81,37 @@ fn format_tool_result(
     elapsed: std::time::Duration,
 ) -> schema::ToolResult {
     format_tool_result_with_images(id, name, result, elapsed, Vec::new())
+}
+
+/// Append a tool execution event to `data/agent_activity.json`.
+/// Wires the `introspect(action='agent_activity')` tool to real data.
+fn log_agent_activity(
+    data_dir: &std::path::Path, tool_name: &str, success: bool, elapsed: std::time::Duration,
+) {
+    let path = data_dir.join("agent_activity.json");
+    let mut data: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_else(|| serde_json::json!({"entries": []}));
+
+    let entries = data["entries"].as_array_mut();
+    if let Some(arr) = entries {
+        arr.push(serde_json::json!({
+            "tool": tool_name,
+            "success": success,
+            "elapsed_ms": elapsed.as_millis() as u64,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        }));
+        // Keep last 200 entries to prevent unbounded growth
+        if arr.len() > 200 {
+            let drain = arr.len() - 200;
+            arr.drain(..drain);
+        }
+    }
+
+    if let Ok(content) = serde_json::to_string_pretty(&data) {
+        let _ = std::fs::write(&path, content);
+    }
 }
 
 /// Format a tool execution result into a ToolResult with optional images.

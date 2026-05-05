@@ -329,13 +329,15 @@ async fn handle_chat_message(
         ConsumeResult::Reply { text, thinking } => {
             crate::tools::introspect_tool::log_reasoning_event(
                 &state.config.general.data_dir, session_id,
-                &serde_json::json!({"type":"inference","result":"reply","text_len":text.len(),"thinking_len":thinking.as_ref().map(|t|t.len()).unwrap_or(0)}));
+                &serde_json::json!({"type":"inference","result":"reply","text_len":text.len(),"thinking_len":thinking.as_ref().map(|t|t.len()).unwrap_or(0)}),
+                thinking.as_deref());
             deliver_reply(state, provider, sink.sender, &mut messages, &tools, content, session_id, &text, &thinking).await;
         }
         ConsumeResult::Escalate { objective, plan, planned_turns } => {
             crate::tools::introspect_tool::log_reasoning_event(
                 &state.config.general.data_dir, session_id,
-                &serde_json::json!({"type":"inference","result":"escalate","objective":&objective,"planned_turns":planned_turns}));
+                &serde_json::json!({"type":"inference","result":"escalate","objective":&objective,"planned_turns":planned_turns}),
+                None);
             tracing::info!(objective = %objective, planned_turns, "L1 result: Escalate → ReAct");
             stop_flag.store(false, std::sync::atomic::Ordering::Relaxed);
             send_ws(sink.sender, "status", &serde_json::json!({"message": format!("ReAct loop activated ({} turns planned)", planned_turns)})).await;
@@ -355,7 +357,8 @@ async fn handle_chat_message(
         ConsumeResult::ToolCall { id, name, arguments } => {
             crate::tools::introspect_tool::log_reasoning_event(
                 &state.config.general.data_dir, session_id,
-                &serde_json::json!({"type":"inference","result":"tool_call","tool":&name}));
+                &serde_json::json!({"type":"inference","result":"tool_call","tool":&name}),
+                None);
             let tc = schema::ToolCall { id, name, arguments };
             run_l1_tool_chain(state, provider, sink.sender, &mut messages, &tools, content, session_id, tc, pending_chain, stop_flag).await;
         }
