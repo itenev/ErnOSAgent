@@ -488,16 +488,6 @@ Run these commands from the project root.
 | 19.3.2 | Rollback | `Use checkpoint tool to rollback [ID]` | File restored to pre-edit state | ☐ |
 | 19.3.3 | Prune old | `Use checkpoint tool to prune with max_age_hours 1` | Old snapshots removed | ☐ |
 
-### 19.4 Self-Recompile
-
-| # | Check | Action | Expected | Pass |
-|---|-------|--------|----------|------|
-| 19.4.1 | No-op blocked | `Use system_recompile` (without any code changes) | "RECOMPILE BLOCKED: No source files changed" | ☐ |
-| 19.4.2 | Change gate | Make a trivial change → `system_recompile` | Pipeline proceeds past Stage 0 | ☐ |
-| 19.4.3 | Test gate | Introduce a test failure → `system_recompile` | "RECOMPILE BLOCKED: Tests failed" | ☐ |
-| 19.4.4 | Warning gate | Introduce an unused variable → `system_recompile` | "RECOMPILE BLOCKED: N warning(s)" | ☐ |
-| 19.4.5 | Full pipeline | Clean code → `system_recompile` | All 8 stages pass, binary staged | ☐ |
-| 19.4.6 | Resume state | After recompile restart, check logs | "POST-RECOMPILE RESUME" log entry, resume.json consumed | ☐ |
 
 ---
 
@@ -538,7 +528,7 @@ Run these commands from the project root.
 | 16. Governance | 7 | Stubs, tests, builds, audit |
 | 17. Edge Cases | 10 | Unicode, stress, error recovery |
 | 18. WebSocket | 5 | Streaming, events, sessions |
-| 19. Self-Coding | 18 | Containment, edit, recompile, checkpoint |
+| 19. Self-Coding | 12 | Containment, edit, checkpoint |
 | 20. Error Logs & Self-Healing | 8 | system_logs tool, self_edit audit |
 | 21. Master Capabilities Prompt | 15 | Full system stress test across all 90+ tool calls |
 | **Total** | **236** | |
@@ -612,14 +602,14 @@ The verification runs in **three phases**. Here's exactly what you'll see:
 │                                                                 │
 │  The agent enters the multi-turn ReAct loop (25 tools) and      │
 │  executes 31 more tool calls: synaptic graph, self_skills,      │
-│  codebase_edit, checkpoint, sub-agent, system_recompile,        │
+│  codebase_edit, checkpoint, sub-agent,                          │
 │  cleanup, and final verification reads.                         │
 │                                                                 │
 │  What you'll see in the UI:                                     │
 │  • "Iteration 0", "Iteration 1", ... in the terminal           │
 │  • More green tool chips appearing inside the ReAct loop        │
 │  • Sub-agent spawned (step 70, briefly shows nested execution) │
-│  • system_recompile returns "BLOCKED" (step 78, expected)      │
+│  • Cleanup: scratchpad, skills, lessons cleared                │
 ├─────────────────────────────────────────────────────────────────┤
 │  PHASE 3: Final Report                                          │
 │                                                                 │
@@ -771,7 +761,7 @@ I need you to run a COMPLETE system capabilities verification. Execute every sin
 ============================================================================
 
 Now escalate using start_react_system with:
-- objective: "Complete the L2 tool verification by exercising all ReAct-exclusive tools: synaptic (8 actions), self_skills (5 actions), codebase_edit (4 actions), checkpoint (3 actions), spawn_sub_agent, system_recompile (dry-run), refuse_request, extend_turns, and deliver final report via reply_request"
+- objective: "Complete the L2 tool verification by exercising all ReAct-exclusive tools: synaptic (8 actions), self_skills (5 actions), codebase_edit (4 actions), checkpoint (3 actions), spawn_sub_agent, refuse_request, extend_turns, and deliver final report via reply_request"
 - plan: "Execute each L2-exclusive tool with every action variant and argument, then deliver final report"
 - planned_turns: 20
 
@@ -836,9 +826,8 @@ Now escalate using start_react_system with:
 88. self_skills (delete): action="delete", name="System Verification"
 89. lessons (remove):     action="remove", query="verification"
 
---- TOOL: system_recompile ---
-(Tests the recompile blocker — should return "RECOMPILE BLOCKED: No source files changed")
-90. system_recompile: (no args — expected to be blocked since no code was changed)
+--- NOTE: system_recompile ---
+(Removed from master prompt — run as a separate dedicated test)
 
 --- TOOL: refuse_request ---
 Note: Do NOT actually refuse. Instead, just acknowledge that refuse_request exists and would be called with reason="The request violates containment policy" if needed. You can skip actually calling it since it would terminate the loop prematurely.
@@ -883,7 +872,7 @@ After all tools have been called, use reply_request (with message arg) to delive
 | generate_image | 1 | 1 | prompt, width, height, steps, guidance | 5/5 | ✅/❌ |
 | codebase_edit | patch,insert,multi_patch,delete | 4/4 | action, path, find, replace, anchor, content, position, patches | 8/8 | ✅/❌ |
 | checkpoint | list,rollback,prune | 3/3 | action, id, max_age_hours | 3/3 | ✅/❌ |
-| system_recompile | 1 | 1 | (none) | 0/0 | ✅/❌ |
+| system_recompile | — | — | (separate test) | — | ⚠️ |
 | spawn_sub_agent | 1 | 1 | task, tools, max_turns | 3/3 | ✅/❌ |
 | session_recall | list,get,summary,search,topics | 5/5 | action, session_id, query, page, per_page, limit | 6/6 | ✅/❌ |
 | introspect | reasoning_log,agent_activity,scheduler_status,observer_audit,system_status,my_tools | 6/6 | action, limit, session_id | 3/3 | ✅/❌ |
@@ -921,7 +910,7 @@ After the prompt completes, here's what each phase should have produced:
 |-------|---------------------|
 | **Phase 1** (Steps 1–47) | 47 green tool chips fire in sequence. Each completes with ✅. The browser opens httpbin.org, interacts with the page (wait, extract, screenshot, evaluate, type, click, navigate), lists open pages, then closes. An image is generated via Flux. An artifact card appears in the chat. A plan proposal card appears. |
 | **Escalation** (L1 → L2) | A `start_react_system` tool chip appears. The status bar shows "ReAct loop activated (20 turns planned)". Terminal logs show the escalation. |
-| **Phase 2** (Steps 48–78) | 31 more tool calls inside the ReAct loop. You NEED to call the Planning tool and form a plan for the following. The terminal shows "Iteration 0", "Iteration 1", etc. Synaptic graph is fully populated with 2 nodes and 1 edge. A "System Verification" skill is created, refined, then deleted. The test file from step 5 is edited by insert → patch → multi_patch operations. A sub-agent is spawned and completes. system_recompile returns "BLOCKED" (this is correct — no code was changed). Cleanup runs last: scratchpad unpinned, skill deleted, lesson removed, memory reset. |
+| **Phase 2** (Steps 48–78) | 30 more tool calls inside the ReAct loop. You NEED to call the Planning tool and form a plan for the following. The terminal shows "Iteration 0", "Iteration 1", etc. Synaptic graph is fully populated with 2 nodes and 1 edge. A "System Verification" skill is created, refined, then deleted. The test file from step 5 is edited by insert → patch → multi_patch operations. A sub-agent is spawned and completes. Cleanup runs last: scratchpad unpinned, skill deleted, lesson removed, memory reset. |
 | **Phase 3** (Report) | `reply_request` terminates the ReAct loop. A structured markdown report renders in the chat with 78+ rows in the results matrix, a tool coverage summary table, and an overall PASS/FAIL verdict. |
 
 ### Post-Run Verification Checks
@@ -943,5 +932,5 @@ After the master prompt completes, manually verify these items to confirm everyt
 | 21.11 | Browser lifecycle complete | Tool chips in chat | Open → wait → extract → screenshot → evaluate → type → click → navigate → list → close all completed |
 | 21.12 | Image generated | Tool chip or `ls data/` | Image file created in data/ or artifacts/ directory |
 | 21.13 | Sub-agent completed | Tool chip in chat | Sub-agent spawned, executed memory+logs tools, and returned a summary |
-| 21.14 | System recompile blocked | Tool chip in chat | Returns "RECOMPILE BLOCKED: No source files changed" (correct behavior) |
+| 21.14 | *(system_recompile — separate test)* | — | — |
 | 21.15 | All 27 unique tools exercised | Final report matrix | Every tool name appears at least once in the report — no gaps |
