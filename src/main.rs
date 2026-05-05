@@ -10,6 +10,12 @@ use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env before anything else so API keys are available to all subsystems
+    if let Err(e) = dotenvy::dotenv() {
+        // §2.7: fail LOUD — missing .env disables API-keyed search tiers
+        eprintln!("[warn] No .env file found: {} — API-keyed search tiers will be unavailable", e);
+    }
+
     let config = ern_os::config::AppConfig::load()
         .context("Failed to load configuration")?;
 
